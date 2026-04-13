@@ -1,0 +1,45 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local data and vector stores
+data/
+vector_store/
+*.faiss
+*.bin
+*.npy
+*.npz
+*.parquet
+*.pkl
+*.sqlite
+*.sqlite3
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
