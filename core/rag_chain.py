@@ -77,7 +77,7 @@ class RAGChain:
         *,
         top_k: int = 4,
         min_score: float | None = None,
-        rerank: bool = True,
+        rerank: bool | None = None,
         refresh_from_processed: bool = False,
     ) -> list[SearchResult]:
         """Expose retrieval without generation."""
@@ -95,7 +95,7 @@ class RAGChain:
         *,
         top_k: int = 4,
         min_score: float | None = None,
-        rerank: bool = True,
+        rerank: bool | None = None,
         max_context_chars: int = 4000,
         system_prompt: str | None = None,
         history: Sequence[ChatMessage | Mapping[str, str]] | None = None,

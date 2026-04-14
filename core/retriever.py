@@ -1,21 +1,25 @@
-"""Local vector retrieval with persistence, similarity search, and reranking."""
+"""Local vector store plus pluggable retrieval strategies."""
 
 from __future__ import annotations
 
+import importlib
 import json
-import math
-import re
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from configs import VectorDBConfig, vector_db_config
 
 from .embedding import EmbeddingClient, SupportsEmbedding
 
-TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]")
+DEFAULT_RETRIEVAL_METHOD = os.getenv("RETRIEVAL_METHOD", "dense").strip().lower() or "dense"
+
+StrategyFactory = Callable[[], "RetrievalStrategy"]
+_STRATEGY_FACTORIES: dict[str, StrategyFactory] = {}
+_LAZY_STRATEGY_FACTORIES: dict[str, tuple[str, str]] = {}
 
 
 @dataclass(slots=True)
@@ -30,27 +34,108 @@ class VectorDocument:
 
 @dataclass(slots=True)
 class SearchResult:
-    """A retrieved chunk with retrieval scores."""
+    """A retrieved chunk with strategy-specific scoring details."""
 
     id: str
     text: str
     metadata: dict[str, Any]
     score: float
-    vector_score: float
-    rerank_score: float
+    vector_score: float = 0.0
+    rerank_score: float = 0.0
+    retrieval_method: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+class RetrievalStrategy(Protocol):
+    """Protocol implemented by each retrieval strategy module."""
+
+    name: str
+
+    def search(
+        self,
+        *,
+        query: str,
+        records: Sequence[VectorDocument],
+        embedding_client: SupportsEmbedding,
+        top_k: int = 4,
+        min_score: float | None = None,
+        **kwargs: Any,
+    ) -> list[SearchResult]:
+        """Return ranked search results for the current strategy."""
+
+
+def register_retrieval_strategy(name: str, factory: StrategyFactory) -> None:
+    """Register a ready-to-use retrieval strategy factory."""
+    normalized_name = _normalize_retrieval_method(name)
+    _STRATEGY_FACTORIES[normalized_name] = factory
+
+
+def register_lazy_retrieval_strategy(
+    name: str,
+    *,
+    module_path: str,
+    class_name: str,
+) -> None:
+    """Register a retrieval strategy that will be imported on demand."""
+    normalized_name = _normalize_retrieval_method(name)
+    _LAZY_STRATEGY_FACTORIES[normalized_name] = (module_path, class_name)
+
+
+def available_retrieval_methods() -> list[str]:
+    """Return all registered retrieval method names."""
+    return sorted(set(_STRATEGY_FACTORIES) | set(_LAZY_STRATEGY_FACTORIES))
+
+
+def get_default_retrieval_method() -> str:
+    """Return the current module-level default retrieval method."""
+    return DEFAULT_RETRIEVAL_METHOD
+
+
+def set_default_retrieval_method(name: str) -> str:
+    """Update the module-level default retrieval method."""
+    global DEFAULT_RETRIEVAL_METHOD
+    DEFAULT_RETRIEVAL_METHOD = _normalize_retrieval_method(name)
+    return DEFAULT_RETRIEVAL_METHOD
+
+
+def resolve_retrieval_strategy(name: str) -> RetrievalStrategy:
+    """Instantiate the retrieval strategy matching the given name."""
+    normalized_name = _normalize_retrieval_method(name)
+
+    if normalized_name in _STRATEGY_FACTORIES:
+        return _STRATEGY_FACTORIES[normalized_name]()
+
+    if normalized_name not in _LAZY_STRATEGY_FACTORIES:
+        available = ", ".join(available_retrieval_methods()) or "none"
+        raise ValueError(
+            f"Unknown retrieval method: {normalized_name}. "
+            f"Available methods: {available}."
+        )
+
+    module_path, class_name = _LAZY_STRATEGY_FACTORIES[normalized_name]
+    module = importlib.import_module(module_path)
+    strategy_cls = getattr(module, class_name)
+    register_retrieval_strategy(normalized_name, strategy_cls)
+    return resolve_retrieval_strategy(normalized_name)
 
 
 class LocalVectorRetriever:
-    """Simple local vector store backed by a JSON file."""
+    """Local vector store wrapper with switchable retrieval strategies."""
 
     def __init__(
         self,
         embedding_client: SupportsEmbedding | None = None,
         config: VectorDBConfig | None = None,
+        *,
+        retrieval_method: str | None = None,
     ) -> None:
         self.embedding_client = embedding_client or EmbeddingClient()
         self.config = config or vector_db_config
+        self.retrieval_method = _normalize_retrieval_method(
+            retrieval_method or DEFAULT_RETRIEVAL_METHOD
+        )
         self._records: list[VectorDocument] | None = None
+        self._strategy_cache: dict[str, RetrievalStrategy] = {}
 
     @property
     def collection_dir(self) -> Path:
@@ -59,6 +144,23 @@ class LocalVectorRetriever:
     @property
     def store_path(self) -> Path:
         return self.collection_dir / "store.json"
+
+    @classmethod
+    def available_retrieval_methods(cls) -> list[str]:
+        """Expose registered retrieval methods to callers."""
+        return available_retrieval_methods()
+
+    def set_retrieval_method(self, name: str) -> str:
+        """Change the default retrieval method for this retriever instance."""
+        self.retrieval_method = _normalize_retrieval_method(name)
+        return self.retrieval_method
+
+    def get_retrieval_strategy(self, retrieval_method: str | None = None) -> RetrievalStrategy:
+        """Return the active retrieval strategy, caching instances per method."""
+        method = _normalize_retrieval_method(retrieval_method or self.retrieval_method)
+        if method not in self._strategy_cache:
+            self._strategy_cache[method] = resolve_retrieval_strategy(method)
+        return self._strategy_cache[method]
 
     def add_documents(
         self,
@@ -99,38 +201,25 @@ class LocalVectorRetriever:
         *,
         top_k: int = 4,
         min_score: float | None = None,
-        rerank: bool = True,
+        rerank: bool | None = None,
+        retrieval_method: str | None = None,
+        **strategy_kwargs: Any,
     ) -> list[SearchResult]:
-        """Search by vector similarity and optionally apply lightweight reranking."""
+        """Search documents using the currently selected retrieval strategy."""
         records = self._load_records()
         if not records:
             return []
 
-        query_vector = self.embedding_client.embed_text(query)
-        query_tokens = _tokenize(query)
-        results: list[SearchResult] = []
-
-        for record in records:
-            vector_score = _cosine_similarity(query_vector, record.vector)
-            rerank_score = _keyword_overlap_score(query_tokens, record.text)
-            score = vector_score if not rerank else 0.85 * vector_score + 0.15 * rerank_score
-
-            if min_score is not None and score < min_score:
-                continue
-
-            results.append(
-                SearchResult(
-                    id=record.id,
-                    text=record.text,
-                    metadata=dict(record.metadata),
-                    score=score,
-                    vector_score=vector_score,
-                    rerank_score=rerank_score,
-                )
-            )
-
-        results.sort(key=lambda item: (item.score, item.vector_score), reverse=True)
-        return results[: max(top_k, 0)]
+        strategy = self.get_retrieval_strategy(retrieval_method)
+        return strategy.search(
+            query=query,
+            records=records,
+            embedding_client=self.embedding_client,
+            top_k=top_k,
+            min_score=min_score,
+            rerank=rerank,
+            **strategy_kwargs,
+        )
 
     def build_context(
         self,
@@ -168,7 +257,7 @@ class LocalVectorRetriever:
             self.store_path.unlink()
 
     def stats(self) -> dict[str, Any]:
-        """Return basic collection statistics."""
+        """Return collection statistics plus retrieval mode metadata."""
         records = self._load_records()
         dimensions = len(records[0].vector) if records and records[0].vector else 0
         return {
@@ -176,6 +265,8 @@ class LocalVectorRetriever:
             "store_path": str(self.store_path),
             "document_count": len(records),
             "dimensions": dimensions,
+            "retrieval_method": self.retrieval_method,
+            "available_retrieval_methods": self.available_retrieval_methods(),
         }
 
     def _load_records(self) -> list[VectorDocument]:
@@ -214,10 +305,11 @@ class LocalVectorRetriever:
     @staticmethod
     def _coerce_document(document: str | Mapping[str, Any] | Any) -> VectorDocument:
         if isinstance(document, str):
-            text = document
-            metadata: dict[str, Any] = {}
-            document_id = uuid.uuid4().hex
-            return VectorDocument(id=document_id, text=text, metadata=metadata)
+            return VectorDocument(
+                id=uuid.uuid4().hex,
+                text=document,
+                metadata={},
+            )
 
         if isinstance(document, Mapping):
             text = (
@@ -232,41 +324,31 @@ class LocalVectorRetriever:
                 or metadata.get("id")
                 or uuid.uuid4().hex
             )
-            return VectorDocument(id=document_id, text=str(text), metadata=metadata)
+            return VectorDocument(
+                id=document_id,
+                text=str(text),
+                metadata=metadata,
+            )
 
         text = getattr(document, "page_content", None) or getattr(document, "text", "")
         metadata = _json_safe_dict(getattr(document, "metadata", {}))
-        document_id = str(getattr(document, "id", None) or metadata.get("id") or uuid.uuid4().hex)
-        return VectorDocument(id=document_id, text=str(text), metadata=metadata)
+        document_id = str(
+            getattr(document, "id", None)
+            or metadata.get("id")
+            or uuid.uuid4().hex
+        )
+        return VectorDocument(
+            id=document_id,
+            text=str(text),
+            metadata=metadata,
+        )
 
 
-def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-
-    dot_product = sum(left_value * right_value for left_value, right_value in zip(left, right))
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot_product / (left_norm * right_norm)
-
-
-def _tokenize(text: str) -> set[str]:
-    return {token.lower() for token in TOKEN_PATTERN.findall(text or "")}
-
-
-def _keyword_overlap_score(query_tokens: set[str], text: str) -> float:
-    if not query_tokens:
-        return 0.0
-
-    candidate_tokens = _tokenize(text)
-    if not candidate_tokens:
-        return 0.0
-
-    overlap = len(query_tokens & candidate_tokens)
-    return overlap / len(query_tokens)
+def _normalize_retrieval_method(name: str) -> str:
+    normalized = (name or "").strip().lower()
+    if not normalized:
+        raise ValueError("Retrieval method cannot be empty.")
+    return normalized
 
 
 def _json_safe_dict(data: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -285,3 +367,10 @@ def _json_safe_value(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe_value(item) for item in value]
     return str(value)
+
+
+register_lazy_retrieval_strategy(
+    "dense",
+    module_path=f"{__package__}.dense_retrieval",
+    class_name="DenseRetrievalStrategy",
+)

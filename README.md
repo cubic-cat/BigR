@@ -1,24 +1,25 @@
 # BigR
 
-一个正在完善的本地向量库存储版的 RAG 项目。当前代码已经支持：
+一个使用本地 `vector_store/` 作为向量库的轻量 RAG 项目。当前重点能力是：
 
-- 从 `data/processed/` 读取文本文件
-- 生成 embedding 并写入本地向量库 `vector_store/`
-- 对本地向量库做相似度召回
-- 输出召回结果的排名、相似度分数、来源和文本内容
+- 从 `data/processed/` 读取文本并构建本地知识库
+- 使用可切换的召回策略做检索
+- 支持仅召回测试
+- 支持完整 RAG 全链路测试：召回 + LLM 生成
 
-当前最常用的命令行流程只有两步：
+当前已经实现的召回方式：
 
-1. 先建库
-2. 再做召回测试
+- `dense`
 
-## 目录约定
+后续如果继续新增 `hybrid`、`bm25` 等策略，可以直接沿用现在的切换方式。
+
+## 目录说明
 
 ```text
 configs/         配置文件
 core/            embedding / retriever / generator / rag_chain
 data/raw/        原始文件
-data/processed/  已清洗或已分块的文本，当前默认知识库来源
+data/processed/  当前默认知识库来源
 document/        文档加载模块
 scripts/         命令行脚本
 vector_store/    本地向量库存储目录
@@ -26,38 +27,41 @@ vector_store/    本地向量库存储目录
 
 ## 环境准备
 
-### 1. 安装依赖
+### 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 初始化环境变量
+### 初始化环境变量
 
-如果你还没有 `.env`，可以先从模板复制：
+如果还没有 `.env`，先复制模板：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-然后编辑 `.env`，至少保证 embedding 有可用的 key。
+至少要保证：
 
-### 3. 准备知识库文本
+- 做建库和召回时，embedding key 可用
+- 做全链路时，embedding key 和 LLM key 都可用
 
-把要入库的文本放进：
+### 准备知识库文本
+
+把待入库文本放到：
 
 ```text
 data/processed/
 ```
 
-当前 loader 会默认递归读取下面这些类型：
+当前默认读取的文件类型：
 
 - `.txt`
 - `.md`
 - `.markdown`
 - `.text`
 
-## RAG 相关命令行指令
+## 常用命令
 
 ### 查看当前配置
 
@@ -65,11 +69,7 @@ data/processed/
 python main.py
 ```
 
-作用：
-
-- 打印当前 embedding 模型
-- 打印当前 LLM 模型
-- 打印本地向量库存储路径
+输出当前 embedding 模型、LLM 模型和本地向量库存储路径。
 
 ### 构建知识库
 
@@ -79,71 +79,94 @@ python main.py
 python scripts/build_kb.py
 ```
 
-执行效果：
+作用：
 
-- 从 `data/processed/` 读取文本
+- 读取 `data/processed/`
 - 调用 embedding 模型生成向量
-- 将结果写入 `vector_store/rag_knowledge_base/store.json`
+- 写入 `vector_store/rag_knowledge_base/store.json`
 
-典型输出包括：
-
-- `Embedded N documents from data/processed`
-- `Collection: rag_knowledge_base`
-- `Store: vector_store/.../store.json`
-- `Dimensions: 1024` 或其他向量维度
-
-### 另一种建库方式
-
-`core/embedding.py` 也带了直接执行入口，效果与建库脚本基本一致：
+可选的等价入口：
 
 ```bash
 python -m core.embedding
 ```
 
-更推荐使用：
+## test_rag.py 的执行方式
+
+[`scripts/test_rag.py`](scripts/test_rag.py) 现在支持两种模式：
+
+- 仅召回测试
+- 全链路测试
+
+### 1. 列出可用召回方式
 
 ```bash
-python scripts/build_kb.py
+python scripts/test_rag.py --list-methods
 ```
 
-因为脚本语义更明确。
+当前输出应至少包含：
 
-### 测试召回
+```text
+dense
+```
 
-最常用命令：
+### 2. 仅召回测试
+
+这是最常用的方式，只做检索，不调用 LLM。
+
+#### 直接检索
 
 ```bash
 python scripts/test_rag.py -q "RAG 是什么"
 ```
 
-这个脚本会：
+输出内容包括：
 
-- 检查 `vector_store/` 是否非空
-- 对 query 生成 embedding
-- 在本地向量库中做相似度召回
-- 输出排名、总分、向量分、重排分、来源和召回文本
+- query
+- collection
+- store_path
+- document_count
+- vector_dimensions
+- retrieval_method
+- rank
+- score
+- vector_score
+- rerank_score
+- text
 
-### 交互式输入 query
-
-如果不传 `-q`，脚本会提示你手动输入：
+#### 交互式输入 query
 
 ```bash
 python scripts/test_rag.py
 ```
 
-### 指定召回条数
+脚本会提示你输入检索问题。
+
+#### 指定返回条数
 
 ```bash
 python scripts/test_rag.py -q "RAG 是什么" -k 5
 ```
 
-### 设置最小分数阈值
+#### 设置最小分数阈值
 
 ```bash
 python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
 ```
 
-### 关闭轻量重排
+#### 输出完整召回文本
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --full-text
+```
+
+#### 控制文本预览长度
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --preview-chars 500
+```
+
+#### 关闭轻量重排
 
 ```bash
 python scripts/test_rag.py -q "RAG 是什么" --no-rerank
@@ -151,82 +174,161 @@ python scripts/test_rag.py -q "RAG 是什么" --no-rerank
 
 说明：
 
-- 默认会使用“向量相似度 + 简单关键词重排”
-- 加上 `--no-rerank` 后，只看向量分
+- 默认会按当前召回策略的默认配置决定是否启用重排
+- `--no-rerank` 会强制关闭轻量重排
 
-### 输出完整召回文本
+### 3. 更换召回方式
+
+有两种切换方式。
+
+#### 方法 A：命令行临时切换
 
 ```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-text
+python scripts/test_rag.py -q "RAG 是什么" --retrieval-method dense
 ```
 
-### 控制文本预览长度
+这个方式只影响当前这一次执行。
 
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --preview-chars 500
+#### 方法 B：环境变量切换默认召回方式
+
+在 `.env` 中设置：
+
+```env
+RETRIEVAL_METHOD=dense
 ```
 
-## 常见使用顺序
-
-### 首次使用
+之后直接运行：
 
 ```bash
-pip install -r requirements.txt
+python scripts/test_rag.py -q "RAG 是什么"
+```
+
+当前默认就会使用 `.env` 中指定的召回方式。
+
+### 4. 检索前强制重建知识库
+
+如果你修改了 `data/processed/` 里的文本，想在检索前强制重建向量库，可以加：
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
+```
+
+这个命令会：
+
+- 先从 `data/processed/` 重新生成向量
+- 再执行召回
+
+这样你不一定要单独先跑一次 `build_kb.py`。
+
+## 运行全链路
+
+全链路 = 召回 + 组装上下文 + 调用 LLM 生成答案。
+
+### 最基本的全链路命令
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --full-chain
+```
+
+这个命令会：
+
+- 使用当前召回方式检索文档
+- 拼接 context
+- 调用 LLM 输出最终答案
+- 同时打印召回到的文档及分数
+
+### 指定召回方式跑全链路
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method dense
+```
+
+### 全链路时显示上下文
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --show-context
+```
+
+### 全链路时控制上下文长度
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --max-context-chars 6000
+```
+
+### 全链路时同时刷新知识库
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --refresh-from-processed
+```
+
+## 推荐使用顺序
+
+### 方式一：分步执行
+
+适合排查问题。
+
+```bash
 python main.py
 python scripts/build_kb.py
 python scripts/test_rag.py -q "你的问题"
+python scripts/test_rag.py -q "你的问题" --full-chain
 ```
 
-### 当 `data/processed/` 内容更新后
-
-重新执行建库即可：
+### 方式二：直接检索前刷新
 
 ```bash
-python scripts/build_kb.py
+python scripts/test_rag.py -q "你的问题" --refresh-from-processed
 ```
 
-当前建库逻辑会重新生成本地向量库内容。
+### 方式三：直接跑全链路并刷新
 
-## 召回结果字段说明
+```bash
+python scripts/test_rag.py -q "你的问题" --full-chain --refresh-from-processed
+```
 
-`scripts/test_rag.py` 输出中的主要字段：
+## 召回切换的推荐写法
 
-- `rank`：当前结果的召回排名
-- `id`：文档块 id
-- `source`：来源文件名或来源路径
-- `score`：最终排序分数
-- `vector_score`：纯向量相似度分数
-- `rerank_score`：简单关键词重排得分
-- `text`：召回文本内容或预览
+如果你要做多种策略对比，推荐统一写成这样：
 
-## 当前配置说明
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --retrieval-method dense
+```
 
-当前代码是“本地向量库存储”模式，不依赖远程 qdrant 服务：
+以后新增策略后，只需要替换这里的值，例如：
 
-- 向量库存储目录来自 `VECTOR_DB_PERSIST_DIRECTORY`
-- 默认值是 `vector_store`
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --retrieval-method hybrid
+python scripts/test_rag.py -q "RAG 是什么" --retrieval-method bm25
+```
 
-模型配置按模块分离：
+前提是这些策略已经在代码中注册。
 
-- embedding 读 `EMBEDDING_*`
-- llm 读 `LLM_*`
-- 也支持按 provider 自动回退到 `QWEN_*`、`OPENAI_*`
+## .env 中和召回相关的字段
 
-例如：
+当前模板在 [`.env.example`](.env.example) 中，相关字段包括：
 
-- `EMBEDDING_PROVIDER=qwen`
-- `LLM_PROVIDER=openai`
+```env
+RETRIEVAL_METHOD=dense
+DENSE_ENABLE_RERANK=true
+DENSE_VECTOR_WEIGHT=0.85
+DENSE_KEYWORD_WEIGHT=0.15
+```
 
-这种“embedding 和 LLM 不是一家”的配置是支持的。
+含义：
+
+- `RETRIEVAL_METHOD`：默认召回方式
+- `DENSE_ENABLE_RERANK`：dense 检索默认是否启用轻量重排
+- `DENSE_VECTOR_WEIGHT`：dense 检索中向量分权重
+- `DENSE_KEYWORD_WEIGHT`：dense 检索中关键词重排分权重
 
 ## 常见报错
 
-### 1. 向量库为空
+### 向量库为空
 
-报错含义：
+说明：
 
-- 还没有执行建库
-- 或者 `vector_store/` 目录里没有有效数据
+- 还没有建库
+- 或 `vector_store/` 目录没有有效数据
 
 处理方式：
 
@@ -234,33 +336,50 @@ python scripts/build_kb.py
 python scripts/build_kb.py
 ```
 
-### 2. Embedding API key 缺失
+或者：
 
-报错含义：
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
+```
 
-- 没有在 `.env` 中配置可用的 embedding key
+### 缺少 embedding key
+
+说明：
+
+- 建库和召回都需要 embedding key
 
 处理方式：
 
 - 设置 `EMBEDDING_API_KEY`
 - 或设置 provider 级 key，例如 `QWEN_API_KEY`、`OPENAI_API_KEY`
 
-注意：
+### 缺少 LLM key
 
-- 即使只是做“召回测试”，query 也需要先做 embedding
-- 所以 `scripts/test_rag.py` 仍然需要 embedding key
+说明：
 
-## 当前可直接使用的核心命令清单
+- 只有在 `--full-chain` 模式下才需要
+
+处理方式：
+
+- 设置 `LLM_API_KEY`
+- 或设置 provider 级 key，例如 `QWEN_API_KEY`、`OPENAI_API_KEY`
+
+## 当前最常用命令清单
 
 ```bash
 python main.py
 python scripts/build_kb.py
 python -m core.embedding
+python scripts/test_rag.py --list-methods
 python scripts/test_rag.py
 python scripts/test_rag.py -q "RAG 是什么"
 python scripts/test_rag.py -q "RAG 是什么" -k 5
+python scripts/test_rag.py -q "RAG 是什么" --retrieval-method dense
 python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
 python scripts/test_rag.py -q "RAG 是什么" --no-rerank
 python scripts/test_rag.py -q "RAG 是什么" --full-text
-python scripts/test_rag.py -q "RAG 是什么" --preview-chars 500
+python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
+python scripts/test_rag.py -q "RAG 是什么" --full-chain
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --show-context
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method dense
 ```
