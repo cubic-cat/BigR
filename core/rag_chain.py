@@ -78,6 +78,7 @@ class RAGChain:
         top_k: int = 4,
         min_score: float | None = None,
         rerank: bool | None = None,
+        rerank_method: str | None = None,
         refresh_from_processed: bool = False,
     ) -> list[SearchResult]:
         """Expose retrieval without generation."""
@@ -87,6 +88,7 @@ class RAGChain:
             top_k=top_k,
             min_score=min_score,
             rerank=rerank,
+            rerank_method=rerank_method,
         )
 
     def ask(
@@ -96,6 +98,7 @@ class RAGChain:
         top_k: int = 4,
         min_score: float | None = None,
         rerank: bool | None = None,
+        rerank_method: str | None = None,
         max_context_chars: int = 4000,
         system_prompt: str | None = None,
         history: Sequence[ChatMessage | Mapping[str, str]] | None = None,
@@ -107,6 +110,7 @@ class RAGChain:
             top_k=top_k,
             min_score=min_score,
             rerank=rerank,
+            rerank_method=rerank_method,
             refresh_from_processed=refresh_from_processed,
         )
         context = self.retriever.build_context(

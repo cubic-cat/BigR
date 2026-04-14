@@ -6,7 +6,7 @@ import importlib
 import json
 import os
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -14,36 +14,20 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 from configs import VectorDBConfig, vector_db_config
 
 from .embedding import EmbeddingClient, SupportsEmbedding
+from .reranker import (
+    available_rerank_methods,
+    get_default_rerank_candidate_top_k,
+    get_default_rerank_enabled,
+    get_default_rerank_method,
+    resolve_reranker,
+)
+from .search_types import SearchResult, VectorDocument
 
 DEFAULT_RETRIEVAL_METHOD = os.getenv("RETRIEVAL_METHOD", "dense").strip().lower() or "dense"
 
 StrategyFactory = Callable[[], "RetrievalStrategy"]
 _STRATEGY_FACTORIES: dict[str, StrategyFactory] = {}
 _LAZY_STRATEGY_FACTORIES: dict[str, tuple[str, str]] = {}
-
-
-@dataclass(slots=True)
-class VectorDocument:
-    """A text chunk plus its dense vector representation."""
-
-    id: str
-    text: str
-    metadata: dict[str, Any] = field(default_factory=dict)
-    vector: list[float] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class SearchResult:
-    """A retrieved chunk with strategy-specific scoring details."""
-
-    id: str
-    text: str
-    metadata: dict[str, Any]
-    score: float
-    vector_score: float = 0.0
-    rerank_score: float = 0.0
-    retrieval_method: str = ""
-    details: dict[str, Any] = field(default_factory=dict)
 
 
 class RetrievalStrategy(Protocol):
@@ -128,14 +112,19 @@ class LocalVectorRetriever:
         config: VectorDBConfig | None = None,
         *,
         retrieval_method: str | None = None,
+        rerank_method: str | None = None,
     ) -> None:
         self.embedding_client = embedding_client or EmbeddingClient()
         self.config = config or vector_db_config
         self.retrieval_method = _normalize_retrieval_method(
             retrieval_method or DEFAULT_RETRIEVAL_METHOD
         )
+        self.rerank_method = _normalize_rerank_method(
+            rerank_method or get_default_rerank_method()
+        )
         self._records: list[VectorDocument] | None = None
         self._strategy_cache: dict[str, RetrievalStrategy] = {}
+        self._reranker_cache: dict[str, Any] = {}
 
     @property
     def collection_dir(self) -> Path:
@@ -155,12 +144,29 @@ class LocalVectorRetriever:
         self.retrieval_method = _normalize_retrieval_method(name)
         return self.retrieval_method
 
+    @classmethod
+    def available_rerank_methods(cls) -> list[str]:
+        """Expose registered rerank methods to callers."""
+        return available_rerank_methods()
+
+    def set_rerank_method(self, name: str) -> str:
+        """Change the default rerank method for this retriever instance."""
+        self.rerank_method = _normalize_rerank_method(name)
+        return self.rerank_method
+
     def get_retrieval_strategy(self, retrieval_method: str | None = None) -> RetrievalStrategy:
         """Return the active retrieval strategy, caching instances per method."""
         method = _normalize_retrieval_method(retrieval_method or self.retrieval_method)
         if method not in self._strategy_cache:
             self._strategy_cache[method] = resolve_retrieval_strategy(method)
         return self._strategy_cache[method]
+
+    def get_reranker(self, rerank_method: str | None = None) -> Any:
+        """Return the active reranker, caching instances per method."""
+        method = _normalize_rerank_method(rerank_method or self.rerank_method)
+        if method not in self._reranker_cache:
+            self._reranker_cache[method] = resolve_reranker(method)
+        return self._reranker_cache[method]
 
     def add_documents(
         self,
@@ -203,6 +209,8 @@ class LocalVectorRetriever:
         min_score: float | None = None,
         rerank: bool | None = None,
         retrieval_method: str | None = None,
+        rerank_method: str | None = None,
+        candidate_top_k: int | None = None,
         **strategy_kwargs: Any,
     ) -> list[SearchResult]:
         """Search documents using the currently selected retrieval strategy."""
@@ -210,15 +218,32 @@ class LocalVectorRetriever:
         if not records:
             return []
 
+        active_rerank = get_default_rerank_enabled() if rerank is None else rerank
+        effective_top_k = max(top_k, 0)
+        candidate_limit = _resolve_candidate_top_k(
+            requested_top_k=effective_top_k,
+            candidate_top_k=candidate_top_k,
+            rerank_enabled=active_rerank,
+        )
         strategy = self.get_retrieval_strategy(retrieval_method)
-        return strategy.search(
+        results = strategy.search(
             query=query,
             records=records,
             embedding_client=self.embedding_client,
-            top_k=top_k,
-            min_score=min_score,
-            rerank=rerank,
+            top_k=candidate_limit,
+            min_score=None if active_rerank else min_score,
             **strategy_kwargs,
+        )
+
+        if not active_rerank:
+            return results[:effective_top_k]
+
+        reranker = self.get_reranker(rerank_method)
+        return reranker.rerank(
+            query=query,
+            results=results,
+            top_k=effective_top_k,
+            min_score=min_score,
         )
 
     def build_context(
@@ -267,6 +292,9 @@ class LocalVectorRetriever:
             "dimensions": dimensions,
             "retrieval_method": self.retrieval_method,
             "available_retrieval_methods": self.available_retrieval_methods(),
+            "rerank_method": self.rerank_method,
+            "rerank_enabled": get_default_rerank_enabled(),
+            "available_rerank_methods": self.available_rerank_methods(),
         }
 
     def _load_records(self) -> list[VectorDocument]:
@@ -349,6 +377,31 @@ def _normalize_retrieval_method(name: str) -> str:
     if not normalized:
         raise ValueError("Retrieval method cannot be empty.")
     return normalized
+
+
+def _normalize_rerank_method(name: str) -> str:
+    normalized = (name or "").strip().lower()
+    if not normalized:
+        raise ValueError("Rerank method cannot be empty.")
+    return normalized
+
+
+def _resolve_candidate_top_k(
+    *,
+    requested_top_k: int,
+    candidate_top_k: int | None,
+    rerank_enabled: bool,
+) -> int:
+    if requested_top_k <= 0:
+        return 0
+
+    if candidate_top_k is not None:
+        return max(candidate_top_k, requested_top_k)
+
+    if not rerank_enabled:
+        return requested_top_k
+
+    return max(get_default_rerank_candidate_top_k(), requested_top_k)
 
 
 def _json_safe_dict(data: Mapping[str, Any] | Any) -> dict[str, Any]:

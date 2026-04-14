@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core import LocalVectorRetriever, RAGChain
+from core import LocalVectorRetriever, RAGChain, available_rerank_methods
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-rerank",
         action="store_true",
-        help="Disable the lightweight keyword reranking step.",
+        help="Disable reranking entirely.",
     )
     parser.add_argument(
         "--full-text",
@@ -57,9 +57,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Retrieval method to use, for example: dense.",
     )
     parser.add_argument(
+        "--rerank-method",
+        default=None,
+        help="Rerank method to use, for example: keyword.",
+    )
+    parser.add_argument(
         "--list-methods",
         action="store_true",
-        help="List available retrieval methods and exit.",
+        help="List available retrieval and rerank methods and exit.",
     )
     parser.add_argument(
         "--full-chain",
@@ -81,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--refresh-from-processed",
         action="store_true",
         help="Rebuild the local vector store from data/processed before search.",
+    )
+    parser.add_argument(
+        "--candidate-top-k",
+        type=int,
+        default=None,
+        help="How many retrieval candidates to fetch before reranking.",
     )
     return parser
 
@@ -113,14 +124,20 @@ def render_text(text: str, *, full_text: bool, preview_chars: int) -> str:
 
 
 def print_available_methods() -> None:
-    methods = LocalVectorRetriever.available_retrieval_methods()
     print("=== Available Retrieval Methods ===")
-    for method in methods:
+    for method in LocalVectorRetriever.available_retrieval_methods():
+        print(method)
+    print()
+    print("=== Available Rerank Methods ===")
+    for method in available_rerank_methods():
         print(method)
 
 
 def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
-    retriever = LocalVectorRetriever(retrieval_method=args.retrieval_method)
+    retriever = LocalVectorRetriever(
+        retrieval_method=args.retrieval_method,
+        rerank_method=args.rerank_method,
+    )
 
     if args.refresh_from_processed:
         chain = RAGChain(retriever=retriever)
@@ -145,6 +162,8 @@ def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
         min_score=args.min_score,
         rerank=False if args.no_rerank else None,
         retrieval_method=args.retrieval_method,
+        rerank_method=args.rerank_method,
+        candidate_top_k=args.candidate_top_k,
     )
 
     stats = retriever.stats()
@@ -156,8 +175,11 @@ def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
     print(f"vector_dimensions: {stats['dimensions']}")
     print(f"retrieval_method: {stats['retrieval_method']}")
     print(f"available_methods: {', '.join(stats['available_retrieval_methods'])}")
+    print(f"rerank_method: {stats['rerank_method']}")
+    print(f"available_rerank_methods: {', '.join(stats['available_rerank_methods'])}")
     print(f"top_k: {args.top_k}")
     print(f"rerank: {not args.no_rerank}")
+    print(f"candidate_top_k: {args.candidate_top_k or args.top_k}")
     print()
 
     if not results:
@@ -176,7 +198,9 @@ def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
         print(f"id: {result.id}")
         print(f"source: {source}")
         print(f"retrieval_method: {result.retrieval_method}")
+        print(f"rerank_method: {result.rerank_method or '(none)'}")
         print(f"score: {result.score:.6f}")
+        print(f"retrieval_score: {result.retrieval_score:.6f}")
         print(f"vector_score: {result.vector_score:.6f}")
         print(f"rerank_score: {result.rerank_score:.6f}")
         print(
@@ -186,7 +210,10 @@ def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
 
 
 def run_full_chain(args: argparse.Namespace, query: str) -> None:
-    retriever = LocalVectorRetriever(retrieval_method=args.retrieval_method)
+    retriever = LocalVectorRetriever(
+        retrieval_method=args.retrieval_method,
+        rerank_method=args.rerank_method,
+    )
     chain = RAGChain(retriever=retriever)
 
     if not retriever.embedding_client.is_configured():
@@ -205,6 +232,7 @@ def run_full_chain(args: argparse.Namespace, query: str) -> None:
         top_k=args.top_k,
         min_score=args.min_score,
         rerank=False if args.no_rerank else None,
+        rerank_method=args.rerank_method,
         max_context_chars=args.max_context_chars,
         refresh_from_processed=args.refresh_from_processed,
     )
@@ -213,6 +241,7 @@ def run_full_chain(args: argparse.Namespace, query: str) -> None:
     print("=== Full Chain Request ===")
     print(f"query: {query}")
     print(f"retrieval_method: {stats['retrieval_method']}")
+    print(f"rerank_method: {stats['rerank_method']}")
     print(f"collection: {stats['collection_name']}")
     print(f"document_count: {stats['document_count']}")
     print(f"top_k: {args.top_k}")
@@ -240,7 +269,9 @@ def run_full_chain(args: argparse.Namespace, query: str) -> None:
         print(f"id: {item.id}")
         print(f"source: {source}")
         print(f"retrieval_method: {item.retrieval_method}")
+        print(f"rerank_method: {item.rerank_method or '(none)'}")
         print(f"score: {item.score:.6f}")
+        print(f"retrieval_score: {item.retrieval_score:.6f}")
         print(f"vector_score: {item.vector_score:.6f}")
         print(f"rerank_score: {item.rerank_score:.6f}")
         print(
