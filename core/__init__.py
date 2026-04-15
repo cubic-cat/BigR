@@ -1,6 +1,8 @@
 """Core RAG pipeline exports."""
 
 from .dense_retrieval import DenseRetrievalStrategy
+from .hybrid_retrieval import HybridRetrievalStrategy
+from .sparse_retrieval import SparseRetrievalStrategy
 from .embedding import EmbeddingClient, SupportsEmbedding
 from .generator import ChatMessage, GenerationResult, LLMGenerator
 from .keyword_reranker import KeywordReranker
@@ -23,6 +25,8 @@ from .search_types import SearchResult, VectorDocument
 __all__ = [
     "ChatMessage",
     "DenseRetrievalStrategy",
+    "HybridRetrievalStrategy",
+    "SparseRetrievalStrategy",
     "EmbeddingClient",
     "GenerationResult",
     "KeywordReranker",

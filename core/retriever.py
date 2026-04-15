@@ -427,3 +427,15 @@ register_lazy_retrieval_strategy(
     module_path=f"{__package__}.dense_retrieval",
     class_name="DenseRetrievalStrategy",
 )
+
+register_lazy_retrieval_strategy(
+    "sparse",
+    module_path=f"{__package__}.sparse_retrieval",
+    class_name="SparseRetrievalStrategy",
+)
+
+register_lazy_retrieval_strategy(
+    "hybrid",
+    module_path=f"{__package__}.hybrid_retrieval",
+    class_name="HybridRetrievalStrategy",
+)
