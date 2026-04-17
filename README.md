@@ -10,8 +10,8 @@
 
 当前已实现：
 
-- 召回方式：`dense`
-- 重排方式：`keyword`
+- 召回方式：`dense` | `sparse` | `hybrid`
+- 重排方式：`keyword` | `cross_encoder`
 
 ## 目录说明
 
@@ -106,7 +106,10 @@ python scripts/test_rag.py --list-methods
 
 ```text
 dense
+sparse
+hybrid
 keyword
+cross_encoder
 ```
 
 ### 2. 仅召回测试
@@ -217,7 +220,19 @@ python scripts/test_rag.py -q "RAG 是什么"
 python scripts/test_rag.py -q "RAG 是什么" --rerank-method keyword
 ```
 
-#### 方法 B：环境变量切换默认重排方式
+#### 方法 B：命令行临时使用 Cross-Encoder 重排
+
+```bash
+python scripts/test_rag.py -q "RAG 是什么" --rerank-method cross_encoder
+```
+
+首次使用时会自动从 HuggingFace 下载模型。如果网络受限，可手动下载 `BAAI/bge-reranker-base` 到本地，并通过环境变量指定路径：
+
+```env
+CROSS_ENCODER_MODEL=/path/to/local/bge-reranker-base
+```
+
+#### 方法 C：环境变量切换默认重排方式
 
 在 `.env` 中设置：
 
@@ -252,7 +267,7 @@ python scripts/test_rag.py -q "RAG 是什么" --full-chain
 ### 指定召回方式和重排方式跑全链路
 
 ```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method dense --rerank-method keyword
+python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method hybrid --rerank-method cross_encoder
 ```
 
 ### 全链路时显示上下文
@@ -281,7 +296,7 @@ python scripts/test_rag.py -q "RAG 是什么" --full-chain --refresh-from-proces
 python main.py
 python scripts/build_kb.py
 python scripts/test_rag.py -q "你的问题" --retrieval-method dense --rerank-method keyword
-python scripts/test_rag.py -q "你的问题" --full-chain --retrieval-method dense --rerank-method keyword
+python scripts/test_rag.py -q "你的问题" --full-chain --retrieval-method hybrid --rerank-method cross_encoder
 ```
 
 ### 方式二：直接检索前刷新
@@ -307,16 +322,24 @@ RERANK_METHOD=keyword
 RERANK_CANDIDATE_TOP_K=10
 KEYWORD_RERANK_RETRIEVAL_WEIGHT=0.85
 KEYWORD_RERANK_KEYWORD_WEIGHT=0.15
+CROSS_ENCODER_MODEL=BAAI/bge-reranker-base
+CROSS_ENCODER_DEVICE=
+CROSS_ENCODER_BATCH_SIZE=8
+CROSS_ENCODER_MAX_LENGTH=512
 ```
 
 含义：
 
-- `RETRIEVAL_METHOD`：默认召回方式
+- `RETRIEVAL_METHOD`：默认召回方式（`dense` | `sparse` | `hybrid`）
 - `RERANK_ENABLED`：默认是否启用重排
-- `RERANK_METHOD`：默认重排方式
+- `RERANK_METHOD`：默认重排方式（`keyword` | `cross_encoder`）
 - `RERANK_CANDIDATE_TOP_K`：重排前先取多少个候选
 - `KEYWORD_RERANK_RETRIEVAL_WEIGHT`：keyword 重排中原始召回分权重
 - `KEYWORD_RERANK_KEYWORD_WEIGHT`：keyword 重排中关键词匹配分权重
+- `CROSS_ENCODER_MODEL`：Cross-Encoder 模型名称或本地路径
+- `CROSS_ENCODER_DEVICE`：运行设备（如 `cuda`、`cpu`），留空自动选择
+- `CROSS_ENCODER_BATCH_SIZE`：Cross-Encoder 推理批次大小
+- `CROSS_ENCODER_MAX_LENGTH`：Cross-Encoder 最大输入长度
 
 ## 常见报错
 
@@ -361,7 +384,7 @@ python scripts/test_rag.py --list-methods
 python scripts/test_rag.py
 python scripts/test_rag.py -q "RAG 是什么"
 python scripts/test_rag.py -q "RAG 是什么" -k 5
-python scripts/test_rag.py -q "RAG 是什么" --retrieval-method dense --rerank-method keyword
+python scripts/test_rag.py -q "RAG 是什么" --retrieval-method hybrid --rerank-method cross_encoder
 python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
 python scripts/test_rag.py -q "RAG 是什么" --no-rerank
 python scripts/test_rag.py -q "RAG 是什么" --candidate-top-k 10

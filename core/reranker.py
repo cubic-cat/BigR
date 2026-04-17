@@ -133,3 +133,9 @@ register_lazy_reranker(
     module_path=f"{__package__}.keyword_reranker",
     class_name="KeywordReranker",
 )
+
+register_lazy_reranker(
+    "cross_encoder",
+    module_path=f"{__package__}.cross_encoder_reranker",
+    class_name="CrossEncoderReranker",
+)

@@ -5,6 +5,7 @@ from .hybrid_retrieval import HybridRetrievalStrategy
 from .sparse_retrieval import SparseRetrievalStrategy
 from .embedding import EmbeddingClient, SupportsEmbedding
 from .generator import ChatMessage, GenerationResult, LLMGenerator
+from .cross_encoder_reranker import CrossEncoderReranker
 from .keyword_reranker import KeywordReranker
 from .rag_chain import RAGChain, RAGResult
 from .reranker import (
@@ -29,6 +30,7 @@ __all__ = [
     "SparseRetrievalStrategy",
     "EmbeddingClient",
     "GenerationResult",
+    "CrossEncoderReranker",
     "KeywordReranker",
     "LLMGenerator",
     "LocalVectorRetriever",
