@@ -1,4 +1,12 @@
-"""Local vector store configuration."""
+"""Vector store configuration.
+
+Supports two backends:
+  - "local"   : JSON file-based store (default, no extra dependencies)
+  - "qdrant"  : Qdrant vector database (requires qdrant-client)
+
+Qdrant connection is controlled by environment variables:
+  QDRANT_HOST, QDRANT_PORT, QDRANT_URL, QDRANT_API_KEY, QDRANT_VECTOR_SIZE
+"""
 
 from __future__ import annotations
 
@@ -9,9 +17,9 @@ from dataclasses import asdict, dataclass
 
 @dataclass(slots=True, frozen=True)
 class VectorDBConfig:
-    """Settings for a local persistent vector store."""
+    """Settings for the vector store backend."""
 
-    provider: str = "local"
+    provider: str = "local"           # "local" | "qdrant"
     collection_name: str = "rag_knowledge_base"
     distance_metric: str = "cosine"
     persist_directory: str = "vector_store"

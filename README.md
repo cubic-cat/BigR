@@ -1,396 +1,231 @@
 # BigR
 
-一个使用本地 `vector_store/` 作为向量库的轻量 RAG 项目。当前重点能力：
+A lightweight RAG (Retrieval-Augmented Generation) system extended to support large-scale Wikipedia knowledge bases. Supports local vector stores for small-scale use and Qdrant for Wikipedia-scale ingestion.
 
-- 从 `data/processed/` 读取文本并构建知识库
-- 使用可切换的召回方式做第一阶段检索
-- 使用可切换的重排方式做第二阶段排序
-- 支持仅召回测试
-- 支持完整 RAG 全链路测试：召回 + 重排 + LLM 生成
+## Features
 
-当前已实现：
+- Flexible retrieval: `dense` | `sparse` | `hybrid` (RRF)
+- Pluggable reranking: `keyword` | `cross_encoder`
+- Wikipedia JSONL ingestion pipeline (Wikimedia Enterprise format)
+- Pluggable embedding: local `BAAI/bge-m3` (sentence-transformers) or Qwen/OpenAI API
+- Qdrant vector database backend for million-scale knowledge bases
+- RAGAS-based chunking strategy evaluation framework
 
-- 召回方式：`dense` | `sparse` | `hybrid`
-- 重排方式：`keyword` | `cross_encoder`
+## Chunking Strategy Evaluation Results
 
-## 目录说明
+Evaluated 4 configurations (100 Wikipedia articles, 8 questions, RAGAS 0.4.3):
 
-```text
-configs/         配置文件
-core/            embedding / retriever / reranker / generator / rag_chain
-data/raw/        原始文件
-data/processed/  当前默认知识库来源
-document/        文档加载模块
-scripts/         命令行脚本
-vector_store/    本地向量库存储目录
+| Strategy | Embedding | context_precision | faithfulness | answer_relevancy | **Overall avg** |
+|----------|-----------|:-----------------:|:------------:|:----------------:|:---------------:|
+| **fixed512** | **bge-m3** | **0.917** | **1.000** | 0.962 | **0.970** ★ |
+| fixed256 | bge-m3 | 0.771 | 1.000 | 0.960 | 0.933 |
+| section | qwen | 0.760 | 0.958 | 0.963 | 0.920 |
+| section | bge-m3 | 0.765 | 0.875 | **0.971** | 0.903 |
+
+context_recall = 1.000 for all strategies at top-k=5.
+
+**Recommended configuration: `fixed512` chunking + `BAAI/bge-m3` local embedding**
+
+See `chunking_strategy_evaluation_report.docx` for full analysis.
+
+## Roadmap
+
+### Next: Retrieval Index Comparison (on 10 GB pilot corpus)
+
+Using fixed512 + bge-m3 as the confirmed baseline, compare two indexing approaches on the first 5 JSONL files (~10 GB, ~1.5M articles):
+
+| Index type | Description |
+|------------|-------------|
+| **Single-vector** (dense only) | One bge-m3 vector per chunk; cosine similarity |
+| **Dual-vector** (dense + sparse) | bge-m3 dense + BM25 sparse per chunk; RRF fusion |
+
+Offline evaluation metrics (after building a ground-truth test set from the corpus):
+
+| Metric | Target | Description |
+|--------|--------|-------------|
+| Recall@5 | > 0.75 | Core metric — fraction of relevant docs in top-5 |
+| MRR | > 0.65 | Whether the first relevant result ranks high |
+| Precision@5 | > 0.50 | Fraction of top-5 that are relevant (noise control) |
+
+### Later
+
+- Scale-up RAGAS evaluation (500–5000 articles) to validate chunking strategy findings
+- Full ingestion of all 38 files (~75 GB) once index configuration is confirmed
+- Expand evaluation question set with multi-hop, summarization, and comparison questions
+
+
+## Project Structure
+
+```
+BigR/
+├── configs/                     Configuration (embedding, LLM, vector DB)
+├── core/
+│   ├── embedding.py             EmbeddingClient (API) + LocalEmbeddingClient (bge-m3)
+│   ├── retriever.py             Local JSON vector store (small-scale)
+│   ├── qdrant_retriever.py      Qdrant backend (Wikipedia-scale)
+│   ├── dense_retrieval.py       Dense retrieval
+│   ├── sparse_retrieval.py      BM25 sparse retrieval
+│   ├── hybrid_retrieval.py      RRF hybrid retrieval
+│   ├── reranker.py              Reranking framework
+│   ├── keyword_reranker.py      Keyword-based reranker
+│   ├── cross_encoder_reranker.py  Cross-encoder reranker
+│   ├── generator.py             LLM generation
+│   └── rag_chain.py             End-to-end RAG chain
+├── document/
+│   ├── loader.py                Text file loader
+│   ├── wiki_loader.py           Wikipedia JSONL parser
+│   └── splitter.py              Chunking strategies (section-first, fixed-window)
+├── scripts/
+│   ├── build_kb.py              Small-scale knowledge base builder
+│   ├── ingest_wikipedia.py      Wikipedia bulk ingestion pipeline
+│   ├── eval_strategies.py       RAGAS chunking strategy evaluation
+│   └── test_rag.py              Retrieval and RAG chain testing
+├── chunking_strategy_evaluation_report.docx   Evaluation report
+├── EVAL_RESULTS.md              Previous evaluation results (section vs fixed512, Qwen)
+└── PROGRESS.md                  Project progress log
 ```
 
-## 环境准备
+## Setup
 
-### 安装依赖
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 初始化环境变量
-
-如果还没有 `.env`，先复制模板：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-至少要保证：
-
-- 建库和召回时，embedding key 可用
-- 跑全链路时，embedding key 和 LLM key 都可用
-
-### 准备知识库文本
-
-把待入库文本放到：
-
-```text
-data/processed/
-```
-
-当前默认读取的文件类型：
-
-- `.txt`
-- `.md`
-- `.markdown`
-- `.text`
-
-## 常用命令
-
-### 查看当前配置
+### Configure environment
 
 ```bash
-python main.py
+cp .env.example .env
+# Edit .env and set your API keys
 ```
 
-### 构建知识库
-
-推荐命令：
-
-```bash
-python scripts/build_kb.py
+Minimum required for Wikipedia ingestion with bge-m3 (no API key needed):
+```env
+VECTOR_DB_PROVIDER=qdrant
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+QDRANT_VECTOR_SIZE=1024
 ```
 
-作用：
-
-- 读取 `data/processed/`
-- 调用 embedding 模型生成向量
-- 写入 `vector_store/rag_knowledge_base/store.json`
-
-等价入口：
-
-```bash
-python -m core.embedding
+For RAG generation and RAGAS evaluation, also set:
+```env
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_API_KEY=your_key_here
 ```
 
-## test_rag.py 的执行方式
+### Start Qdrant
 
-[`scripts/test_rag.py`](scripts/test_rag.py) 现在支持两种模式：
-
-- 仅召回测试
-- 全链路测试
-
-### 1. 列出可用召回方式和重排方式
+Download the Qdrant binary for your platform from https://github.com/qdrant/qdrant/releases, then:
 
 ```bash
+# Must run from the directory containing the binary
+cd /path/to/qdrant
+./qdrant          # Linux/Mac
+.\qdrant.exe      # Windows
+```
+
+Dashboard: http://localhost:6333/dashboard
+
+## Wikipedia Ingestion
+
+### Ingest with bge-m3 (recommended — free, local)
+
+Edit `scripts/ingest_wikipedia.py` to use `LocalEmbeddingClient`:
+
+```python
+from core.embedding import build_embedding_client
+embedding_client = build_embedding_client(model="BAAI/bge-m3", batch_size=64)
+```
+
+Then run:
+
+```bash
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0_0.jsonl \
+  --collection wikipedia_en \
+  --embed-batch-size 64
+```
+
+### Resume an interrupted run
+
+```bash
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0_5.jsonl \
+  --collection wikipedia_en \
+  --skip 150000
+```
+
+### Dry run (no embedding or upload)
+
+```bash
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0_0.jsonl \
+  --dry-run --max-articles 100
+```
+
+## Chunking Strategy Evaluation
+
+Compare chunking strategies using RAGAS metrics:
+
+```bash
+# Set HF_HUB_OFFLINE=1 if bge-m3 is already downloaded
+$env:HF_HUB_OFFLINE = "1"   # PowerShell
+
+python scripts/eval_strategies.py \
+  --max-articles 100 \
+  --strategies section,fixed512,fixed256 \
+  --embedding BAAI/bge-m3 \
+  --also-qwen-section \
+  --output results/eval_4way.json
+```
+
+Re-run evaluation on existing collections (skip re-ingestion):
+
+```bash
+python scripts/eval_strategies.py \
+  --strategies section,fixed512,fixed256 \
+  --embedding BAAI/bge-m3 \
+  --skip-ingest \
+  --output results/eval_4way.json
+```
+
+## Testing Retrieval
+
+```bash
+# List available retrieval and reranking methods
 python scripts/test_rag.py --list-methods
+
+# Retrieval-only test
+python scripts/test_rag.py -q "Who discovered asteroid 1214 Richilde?"
+
+# Full RAG chain (retrieval + LLM generation)
+python scripts/test_rag.py -q "Who discovered asteroid 1214 Richilde?" --full-chain
+
+# Specify retrieval and reranking methods
+python scripts/test_rag.py -q "your question" \
+  --retrieval-method hybrid \
+  --rerank-method cross_encoder \
+  --full-chain
 ```
 
-当前输出应至少包含：
-
-```text
-dense
-sparse
-hybrid
-keyword
-cross_encoder
-```
-
-### 2. 仅召回测试
-
-这是最常用的方式，只做检索和重排，不调用 LLM。
-
-#### 直接检索
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么"
-```
-
-输出内容包括：
-
-- query
-- collection
-- store_path
-- document_count
-- vector_dimensions
-- retrieval_method
-- rerank_method
-- rank
-- score
-- retrieval_score
-- vector_score
-- rerank_score
-- text
-
-#### 交互式输入 query
-
-```bash
-python scripts/test_rag.py
-```
-
-#### 指定返回条数
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" -k 5
-```
-
-#### 设置最小分数阈值
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
-```
-
-#### 输出完整召回文本
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-text
-```
-
-#### 控制文本预览长度
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --preview-chars 500
-```
-
-#### 关闭重排
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --no-rerank
-```
-
-#### 指定重排前候选数
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --candidate-top-k 10
-```
-
-说明：
-
-- 检索阶段先取 `candidate_top_k` 个候选
-- 然后重排器对候选重新排序
-- 最终返回 `top_k` 个结果
-
-### 3. 更换召回方式
-
-有两种方式。
-
-#### 方法 A：命令行临时切换
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --retrieval-method dense
-```
-
-#### 方法 B：环境变量切换默认召回方式
-
-在 `.env` 中设置：
+## Key .env Settings
 
 ```env
-RETRIEVAL_METHOD=dense
-```
-
-然后直接运行：
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么"
-```
-
-### 4. 更换重排方式
-
-同样有两种方式。
-
-#### 方法 A：命令行临时切换
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --rerank-method keyword
-```
-
-#### 方法 B：命令行临时使用 Cross-Encoder 重排
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --rerank-method cross_encoder
-```
-
-首次使用时会自动从 HuggingFace 下载模型。如果网络受限，可手动下载 `BAAI/bge-reranker-base` 到本地，并通过环境变量指定路径：
-
-```env
-CROSS_ENCODER_MODEL=/path/to/local/bge-reranker-base
-```
-
-#### 方法 C：环境变量切换默认重排方式
-
-在 `.env` 中设置：
-
-```env
-RERANK_METHOD=keyword
-```
-
-如果要默认关闭重排：
-
-```env
-RERANK_ENABLED=false
-```
-
-### 5. 检索前强制重建知识库
-
-如果你修改了 `data/processed/` 里的文本，想在检索前强制重建向量库，可以加：
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
-```
-
-## 运行全链路
-
-全链路 = 召回 + 重排 + 组装上下文 + 调用 LLM 生成答案。
-
-### 最基本的全链路命令
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain
-```
-
-### 指定召回方式和重排方式跑全链路
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method hybrid --rerank-method cross_encoder
-```
-
-### 全链路时显示上下文
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --show-context
-```
-
-### 全链路时控制上下文长度
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --max-context-chars 6000
-```
-
-### 全链路时同时刷新知识库
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --refresh-from-processed
-```
-
-## 推荐使用顺序
-
-### 方式一：分步执行
-
-```bash
-python main.py
-python scripts/build_kb.py
-python scripts/test_rag.py -q "你的问题" --retrieval-method dense --rerank-method keyword
-python scripts/test_rag.py -q "你的问题" --full-chain --retrieval-method hybrid --rerank-method cross_encoder
-```
-
-### 方式二：直接检索前刷新
-
-```bash
-python scripts/test_rag.py -q "你的问题" --refresh-from-processed
-```
-
-### 方式三：直接跑全链路并刷新
-
-```bash
-python scripts/test_rag.py -q "你的问题" --full-chain --refresh-from-processed
-```
-
-## .env 中和召回/重排相关的字段
-
-当前模板在 [`.env.example`](.env.example) 中，相关字段包括：
-
-```env
-RETRIEVAL_METHOD=dense
+# Retrieval
+RETRIEVAL_METHOD=hybrid          # dense | sparse | hybrid
 RERANK_ENABLED=true
-RERANK_METHOD=keyword
+RERANK_METHOD=keyword            # keyword | cross_encoder
 RERANK_CANDIDATE_TOP_K=10
-KEYWORD_RERANK_RETRIEVAL_WEIGHT=0.85
-KEYWORD_RERANK_KEYWORD_WEIGHT=0.15
-CROSS_ENCODER_MODEL=BAAI/bge-reranker-base
-CROSS_ENCODER_DEVICE=
-CROSS_ENCODER_BATCH_SIZE=8
-CROSS_ENCODER_MAX_LENGTH=512
-```
 
-含义：
+# Embedding (API mode)
+EMBEDDING_MODEL_NAME=text-embedding-v4
+EMBEDDING_BATCH_SIZE=10          # max 10 for text-embedding-v4
 
-- `RETRIEVAL_METHOD`：默认召回方式（`dense` | `sparse` | `hybrid`）
-- `RERANK_ENABLED`：默认是否启用重排
-- `RERANK_METHOD`：默认重排方式（`keyword` | `cross_encoder`）
-- `RERANK_CANDIDATE_TOP_K`：重排前先取多少个候选
-- `KEYWORD_RERANK_RETRIEVAL_WEIGHT`：keyword 重排中原始召回分权重
-- `KEYWORD_RERANK_KEYWORD_WEIGHT`：keyword 重排中关键词匹配分权重
-- `CROSS_ENCODER_MODEL`：Cross-Encoder 模型名称或本地路径
-- `CROSS_ENCODER_DEVICE`：运行设备（如 `cuda`、`cpu`），留空自动选择
-- `CROSS_ENCODER_BATCH_SIZE`：Cross-Encoder 推理批次大小
-- `CROSS_ENCODER_MAX_LENGTH`：Cross-Encoder 最大输入长度
-
-## 常见报错
-
-### 向量库为空
-
-说明：
-
-- 还没有建库
-- 或 `vector_store/` 中没有有效数据
-
-处理方式：
-
-```bash
-python scripts/build_kb.py
-```
-
-或者：
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
-```
-
-### 缺少 embedding key
-
-说明：
-
-- 建库和召回都需要 embedding key
-
-### 缺少 LLM key
-
-说明：
-
-- 只有在 `--full-chain` 模式下才需要
-
-## 当前最常用命令清单
-
-```bash
-python main.py
-python scripts/build_kb.py
-python -m core.embedding
-python scripts/test_rag.py --list-methods
-python scripts/test_rag.py
-python scripts/test_rag.py -q "RAG 是什么"
-python scripts/test_rag.py -q "RAG 是什么" -k 5
-python scripts/test_rag.py -q "RAG 是什么" --retrieval-method hybrid --rerank-method cross_encoder
-python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
-python scripts/test_rag.py -q "RAG 是什么" --no-rerank
-python scripts/test_rag.py -q "RAG 是什么" --candidate-top-k 10
-python scripts/test_rag.py -q "RAG 是什么" --full-text
-python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
-python scripts/test_rag.py -q "RAG 是什么" --full-chain
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --show-context
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method dense --rerank-method keyword
+# Vector DB
+VECTOR_DB_PROVIDER=qdrant
+VECTOR_DB_COLLECTION_NAME=wikipedia_en
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+QDRANT_VECTOR_SIZE=1024
 ```

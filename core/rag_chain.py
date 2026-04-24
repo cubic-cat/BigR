@@ -1,7 +1,17 @@
-"""End-to-end RAG chain: retrieve context, then generate an answer."""
+"""End-to-end RAG chain: retrieve context, then generate an answer.
+
+Backend selection
+-----------------
+The retriever backend is chosen by the VECTOR_DB_PROVIDER environment variable:
+  - "local"  (default) : JSON file store, no external dependencies
+  - "qdrant"           : Qdrant vector database (requires qdrant-client)
+
+You can also pass a retriever instance directly to RAGChain(..., retriever=...).
+"""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -10,6 +20,15 @@ from document.loader import DEFAULT_PROCESSED_DIR, load_processed_documents
 
 from .generator import ChatMessage, GenerationResult, LLMGenerator
 from .retriever import LocalVectorRetriever, SearchResult, VectorDocument
+
+
+def _build_default_retriever():
+    """Instantiate the retriever selected by VECTOR_DB_PROVIDER."""
+    provider = os.getenv("VECTOR_DB_PROVIDER", "local").strip().lower()
+    if provider == "qdrant":
+        from .qdrant_retriever import QdrantRetriever
+        return QdrantRetriever()
+    return LocalVectorRetriever()
 
 
 @dataclass(slots=True)
@@ -28,11 +47,11 @@ class RAGChain:
 
     def __init__(
         self,
-        retriever: LocalVectorRetriever | None = None,
+        retriever=None,
         generator: LLMGenerator | None = None,
         knowledge_base_dir: str | Path = DEFAULT_PROCESSED_DIR,
     ) -> None:
-        self.retriever = retriever or LocalVectorRetriever()
+        self.retriever = retriever if retriever is not None else _build_default_retriever()
         self.generator = generator or LLMGenerator()
         self.knowledge_base_dir = Path(knowledge_base_dir)
 
