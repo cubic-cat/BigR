@@ -1,106 +1,105 @@
 # BigR
 
-A lightweight RAG (Retrieval-Augmented Generation) system extended to support large-scale Wikipedia knowledge bases. Supports local vector stores for small-scale use and Qdrant for Wikipedia-scale ingestion.
+轻量级 RAG（检索增强生成）系统，已扩展支持大规模 Wikipedia 知识库。小规模场景使用本地向量库，Wikipedia 级别入库使用 Qdrant。
 
-## Features
+## 主要功能
 
-- Flexible retrieval: `dense` | `sparse` | `hybrid` (RRF)
-- Pluggable reranking: `keyword` | `cross_encoder`
-- Wikipedia JSONL ingestion pipeline (Wikimedia Enterprise format)
-- Pluggable embedding: local `BAAI/bge-m3` (sentence-transformers) or Qwen/OpenAI API
-- Qdrant vector database backend for million-scale knowledge bases
-- RAGAS-based chunking strategy evaluation framework
+- 灵活检索方式：`dense` | `sparse` | `hybrid`（RRF 融合）
+- 可插拔重排：`keyword` | `cross_encoder`
+- Wikipedia JSONL 批量入库流水线（Wikimedia Enterprise 格式）
+- 可插拔 Embedding：本地 `BAAI/bge-m3`（sentence-transformers）或 Qwen/OpenAI API
+- Qdrant 向量库后端，支持百万级知识库
+- 基于 RAGAS 的分块策略评估框架
 
-## Chunking Strategy Evaluation Results
+## 分块策略评测结果
 
-Evaluated 4 configurations (100 Wikipedia articles, 8 questions, RAGAS 0.4.3):
+4 种配置对比（100 篇 Wikipedia 文章，8 个问题，RAGAS 0.4.3）：
 
-| Strategy | Embedding | context_precision | faithfulness | answer_relevancy | **Overall avg** |
-|----------|-----------|:-----------------:|:------------:|:----------------:|:---------------:|
+| 分块策略 | Embedding | context_precision | faithfulness | answer_relevancy | **综合均值** |
+|----------|-----------|:-----------------:|:------------:|:----------------:|:------------:|
 | **fixed512** | **bge-m3** | **0.917** | **1.000** | 0.962 | **0.970** ★ |
 | fixed256 | bge-m3 | 0.771 | 1.000 | 0.960 | 0.933 |
 | section | qwen | 0.760 | 0.958 | 0.963 | 0.920 |
 | section | bge-m3 | 0.765 | 0.875 | **0.971** | 0.903 |
 
-context_recall = 1.000 for all strategies at top-k=5.
+所有策略在 top-k=5 下 context_recall = 1.000。
 
-**Recommended configuration: `fixed512` chunking + `BAAI/bge-m3` local embedding**
+**推荐配置：`fixed512` 分块 + `BAAI/bge-m3` 本地 Embedding**
 
-See `chunking_strategy_evaluation_report.docx` for full analysis.
+完整分析见 `chunking_strategy_evaluation_report.docx`。
 
-## Roadmap
+## 后续计划
 
-### Next: Retrieval Index Comparison (on 10 GB pilot corpus)
+### 下一步：检索索引方式对比（基于 10 GB 测试语料）
 
-Using fixed512 + bge-m3 as the confirmed baseline, compare two indexing approaches on the first 5 JSONL files (~10 GB, ~1.5M articles):
+以 fixed512 + bge-m3 为确定基线，在前 5 个 JSONL 文件（约 10 GB，约 150 万篇文章）上对比两种索引方案：
 
-| Index type | Description |
-|------------|-------------|
-| **Single-vector** (dense only) | One bge-m3 vector per chunk; cosine similarity |
-| **Dual-vector** (dense + sparse) | bge-m3 dense + BM25 sparse per chunk; RRF fusion |
+| 索引方式 | 说明 |
+|----------|------|
+| **单向量**（仅 dense） | 每个 chunk 一个 bge-m3 向量，余弦相似度检索 |
+| **双重向量**（dense + sparse） | 每个 chunk 同时建 bge-m3 稠密向量和 BM25 稀疏向量，RRF 融合 |
 
-Offline evaluation metrics (after building a ground-truth test set from the corpus):
+离线评估指标（构建测试集后跑）：
 
-| Metric | Target | Description |
-|--------|--------|-------------|
-| Recall@5 | > 0.75 | Core metric — fraction of relevant docs in top-5 |
-| MRR | > 0.65 | Whether the first relevant result ranks high |
-| Precision@5 | > 0.50 | Fraction of top-5 that are relevant (noise control) |
+| 指标 | 目标值 | 说明 |
+|------|--------|------|
+| Recall@5 | > 0.75 | 核心指标——相关文档出现在 top-5 中的比例 |
+| MRR | > 0.65 | 第一个相关结果是否排在前面 |
+| Precision@5 | > 0.50 | top-5 中相关文档的比例（噪声是否可控） |
 
-### Later
+### 后续
 
-- Scale-up RAGAS evaluation (500–5000 articles) to validate chunking strategy findings
-- Full ingestion of all 38 files (~75 GB) once index configuration is confirmed
-- Expand evaluation question set with multi-hop, summarization, and comparison questions
+- 扩大 RAGAS 评估规模（500–5000 篇），验证分块策略结论的稳定性
+- 确定最优索引配置后，全量入库所有 38 个文件（约 75 GB）
+- 补充多跳问题、摘要类问题和比较类问题，扩充评测问题集
 
-
-## Project Structure
+## 项目结构
 
 ```
 BigR/
-├── configs/                     Configuration (embedding, LLM, vector DB)
+├── configs/                     配置层（embedding、LLM、向量库）
 ├── core/
 │   ├── embedding.py             EmbeddingClient (API) + LocalEmbeddingClient (bge-m3)
-│   ├── retriever.py             Local JSON vector store (small-scale)
-│   ├── qdrant_retriever.py      Qdrant backend (Wikipedia-scale)
-│   ├── dense_retrieval.py       Dense retrieval
-│   ├── sparse_retrieval.py      BM25 sparse retrieval
-│   ├── hybrid_retrieval.py      RRF hybrid retrieval
-│   ├── reranker.py              Reranking framework
-│   ├── keyword_reranker.py      Keyword-based reranker
-│   ├── cross_encoder_reranker.py  Cross-encoder reranker
-│   ├── generator.py             LLM generation
-│   └── rag_chain.py             End-to-end RAG chain
+│   ├── retriever.py             本地 JSON 向量库（小规模）
+│   ├── qdrant_retriever.py      Qdrant 后端（Wikipedia 规模）
+│   ├── dense_retrieval.py       稠密检索
+│   ├── sparse_retrieval.py      BM25 稀疏检索
+│   ├── hybrid_retrieval.py      RRF 混合检索
+│   ├── reranker.py              重排框架
+│   ├── keyword_reranker.py      关键词重排
+│   ├── cross_encoder_reranker.py  交叉编码器重排
+│   ├── generator.py             LLM 生成
+│   └── rag_chain.py             端到端 RAG 链
 ├── document/
-│   ├── loader.py                Text file loader
-│   ├── wiki_loader.py           Wikipedia JSONL parser
-│   └── splitter.py              Chunking strategies (section-first, fixed-window)
+│   ├── loader.py                文本文件加载器
+│   ├── wiki_loader.py           Wikipedia JSONL 解析器
+│   └── splitter.py              分块策略（section-first、固定窗口）
 ├── scripts/
-│   ├── build_kb.py              Small-scale knowledge base builder
-│   ├── ingest_wikipedia.py      Wikipedia bulk ingestion pipeline
-│   ├── eval_strategies.py       RAGAS chunking strategy evaluation
-│   └── test_rag.py              Retrieval and RAG chain testing
-├── chunking_strategy_evaluation_report.docx   Evaluation report
-├── EVAL_RESULTS.md              Previous evaluation results (section vs fixed512, Qwen)
-└── PROGRESS.md                  Project progress log
+│   ├── build_kb.py              小规模知识库构建脚本
+│   ├── ingest_wikipedia.py      Wikipedia 批量入库流水线
+│   ├── eval_strategies.py       RAGAS 分块策略评估脚本
+│   └── test_rag.py              检索与 RAG 链测试脚本
+├── chunking_strategy_evaluation_report.docx   评测报告
+├── EVAL_RESULTS.md              早期评测结果（section vs fixed512，Qwen）
+└── PROGRESS.md                  项目进度记录
 ```
 
-## Setup
+## 环境配置
 
-### Install dependencies
+### 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Configure environment
+### 配置环境变量
 
 ```bash
 cp .env.example .env
-# Edit .env and set your API keys
+# 编辑 .env，填入 API Key
 ```
 
-Minimum required for Wikipedia ingestion with bge-m3 (no API key needed):
+使用 bge-m3 本地入库时最少需要配置（不需要 API Key）：
 ```env
 VECTOR_DB_PROVIDER=qdrant
 QDRANT_HOST=localhost
@@ -108,37 +107,37 @@ QDRANT_PORT=6333
 QDRANT_VECTOR_SIZE=1024
 ```
 
-For RAG generation and RAGAS evaluation, also set:
+RAG 生成和 RAGAS 评估还需要配置：
 ```env
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_API_KEY=your_key_here
 ```
 
-### Start Qdrant
+### 启动 Qdrant
 
-Download the Qdrant binary for your platform from https://github.com/qdrant/qdrant/releases, then:
+从 https://github.com/qdrant/qdrant/releases 下载对应平台的二进制文件，然后：
 
 ```bash
-# Must run from the directory containing the binary
+# 必须在二进制文件所在目录下启动
 cd /path/to/qdrant
 ./qdrant          # Linux/Mac
 .\qdrant.exe      # Windows
 ```
 
-Dashboard: http://localhost:6333/dashboard
+管理界面：http://localhost:6333/dashboard
 
-## Wikipedia Ingestion
+## Wikipedia 入库
 
-### Ingest with bge-m3 (recommended — free, local)
+### 使用 bge-m3 入库（推荐——免费、本地运行）
 
-Edit `scripts/ingest_wikipedia.py` to use `LocalEmbeddingClient`:
+编辑 `scripts/ingest_wikipedia.py`，切换为 `LocalEmbeddingClient`：
 
 ```python
 from core.embedding import build_embedding_client
 embedding_client = build_embedding_client(model="BAAI/bge-m3", batch_size=64)
 ```
 
-Then run:
+然后运行：
 
 ```bash
 python scripts/ingest_wikipedia.py \
@@ -147,7 +146,7 @@ python scripts/ingest_wikipedia.py \
   --embed-batch-size 64
 ```
 
-### Resume an interrupted run
+### 断点续传
 
 ```bash
 python scripts/ingest_wikipedia.py \
@@ -156,7 +155,7 @@ python scripts/ingest_wikipedia.py \
   --skip 150000
 ```
 
-### Dry run (no embedding or upload)
+### 空跑模式（只解析不入库）
 
 ```bash
 python scripts/ingest_wikipedia.py \
@@ -164,12 +163,12 @@ python scripts/ingest_wikipedia.py \
   --dry-run --max-articles 100
 ```
 
-## Chunking Strategy Evaluation
+## 分块策略评估
 
-Compare chunking strategies using RAGAS metrics:
+使用 RAGAS 对比多种分块策略：
 
 ```bash
-# Set HF_HUB_OFFLINE=1 if bge-m3 is already downloaded
+# 如果 bge-m3 已下载，设置离线模式
 $env:HF_HUB_OFFLINE = "1"   # PowerShell
 
 python scripts/eval_strategies.py \
@@ -180,7 +179,7 @@ python scripts/eval_strategies.py \
   --output results/eval_4way.json
 ```
 
-Re-run evaluation on existing collections (skip re-ingestion):
+复用已有 collection，跳过重新入库：
 
 ```bash
 python scripts/eval_strategies.py \
@@ -190,39 +189,39 @@ python scripts/eval_strategies.py \
   --output results/eval_4way.json
 ```
 
-## Testing Retrieval
+## 检索测试
 
 ```bash
-# List available retrieval and reranking methods
+# 列出可用的检索和重排方式
 python scripts/test_rag.py --list-methods
 
-# Retrieval-only test
+# 仅检索测试
 python scripts/test_rag.py -q "Who discovered asteroid 1214 Richilde?"
 
-# Full RAG chain (retrieval + LLM generation)
+# 全链路测试（检索 + LLM 生成）
 python scripts/test_rag.py -q "Who discovered asteroid 1214 Richilde?" --full-chain
 
-# Specify retrieval and reranking methods
+# 指定检索和重排方式
 python scripts/test_rag.py -q "your question" \
   --retrieval-method hybrid \
   --rerank-method cross_encoder \
   --full-chain
 ```
 
-## Key .env Settings
+## 主要 .env 配置项
 
 ```env
-# Retrieval
+# 检索
 RETRIEVAL_METHOD=hybrid          # dense | sparse | hybrid
 RERANK_ENABLED=true
 RERANK_METHOD=keyword            # keyword | cross_encoder
 RERANK_CANDIDATE_TOP_K=10
 
-# Embedding (API mode)
+# Embedding（API 模式）
 EMBEDDING_MODEL_NAME=text-embedding-v4
-EMBEDDING_BATCH_SIZE=10          # max 10 for text-embedding-v4
+EMBEDDING_BATCH_SIZE=10          # text-embedding-v4 最大 batch=10
 
-# Vector DB
+# 向量库
 VECTOR_DB_PROVIDER=qdrant
 VECTOR_DB_COLLECTION_NAME=wikipedia_en
 QDRANT_HOST=localhost
