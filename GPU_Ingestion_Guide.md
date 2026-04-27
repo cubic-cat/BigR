@@ -2,6 +2,8 @@
 
 本文档面向**有本地 GPU**（NVIDIA CUDA 或 Apple Silicon MPS）的机器，指导如何将 Wikipedia JSONL 数据入库到两个 Qdrant collection，并运行索引对比评估。
 
+**语料范围**：单个文件 `enwiki_namespace_0_0.jsonl`，约 2 GB，~300K 篇英文 Wikipedia 文章，~60 万个 chunks。这是完整 Wikipedia 数据集（38 个文件，~75 GB）的第一个文件，用于索引对比的 pilot 测试。
+
 ---
 
 ## 目标
