@@ -10,7 +10,7 @@ Follow the steps below in order. Do not skip steps.
 
 ## Context
 
-This is part of the BigR RAG system. The chunking strategy has already been decided: **fixed512** (512-token sliding window, 50-token overlap) with **BAAI/bge-m3** embedding. The next evaluation goal is to compare two retrieval index configurations on a 10 GB pilot corpus.
+This is part of the BigR RAG system. The chunking strategy has already been decided: **fixed512** (512-token sliding window, 50-token overlap) with **BAAI/bge-m3** embedding. The next evaluation goal is to compare two retrieval index configurations on a 2 GB pilot corpus.
 
 ### What we're comparing
 
@@ -29,10 +29,10 @@ This is part of the BigR RAG system. The chunking strategy has already been deci
 
 ### Data
 
-- **Files**: `enwiki_namespace_0_0.jsonl` through `_4.jsonl` (5 files, ~10 GB total)
-- **Articles**: ~1.5 million
-- **Chunks**: ~3–4 million (at fixed512 granularity)
-- **Est. ingestion time per collection**: 20–40 min on M3 MPS
+- **File**: `enwiki_namespace_0_0.jsonl` (1 file, ~2 GB)
+- **Articles**: ~300,000
+- **Chunks**: ~600,000 (at fixed512 granularity)
+- **Est. ingestion time per collection**: 3–7 min on M3 MPS
 
 ---
 
@@ -193,16 +193,13 @@ If this works, proceed.
 This collection uses **dense-only** indexing (standard Qdrant cosine similarity). This is the default behavior of `ingest_wikipedia.py` — no changes needed beyond Step 6.
 
 ```bash
-for i in 0 1 2 3 4; do
-  echo "=== wiki_single: file $i ==="
-  python scripts/ingest_wikipedia.py \
-    --file /path/to/enwiki_namespace_0/enwiki_namespace_0_${i}.jsonl \
-    --collection wiki_single \
-    --embed-batch-size 64
-done
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0/enwiki_namespace_0_0.jsonl \
+  --collection wiki_single \
+  --embed-batch-size 64
 ```
 
-Verify after all 5 files:
+Verify after completion:
 
 ```bash
 python -c "
@@ -213,7 +210,7 @@ print('wiki_single points:', info.points_count)
 "
 ```
 
-Expected: ~3–4 million points.
+Expected: ~600,000 points.
 
 ---
 
@@ -373,17 +370,14 @@ if __name__ == "__main__":
     ingest(Path(args.file), skip=args.skip, max_articles=args.max_articles)
 ```
 
-Then run it for all 5 files:
+Then run it for the single file:
 
 ```bash
-for i in 0 1 2 3 4; do
-  echo "=== wiki_dual: file $i ==="
-  python scripts/ingest_wikipedia_dual.py \
-    --file /path/to/enwiki_namespace_0/enwiki_namespace_0_${i}.jsonl
-done
+python scripts/ingest_wikipedia_dual.py \
+  --file /path/to/enwiki_namespace_0/enwiki_namespace_0_0.jsonl
 ```
 
-Verify after all 5 files:
+Verify after completion:
 
 ```bash
 python -c "
@@ -394,7 +388,7 @@ print('wiki_dual points:', info.points_count)
 "
 ```
 
-Expected: ~3–4 million points (same as `wiki_single`).
+Expected: ~600,000 points (same as `wiki_single`).
 
 ---
 
@@ -406,7 +400,7 @@ Expected: ~3–4 million points (same as `wiki_single`).
    cd <qdrant_binary_directory>
    zip -r qdrant_storage_10gb.zip storage/
    ```
-3. Transfer `qdrant_storage_10gb.zip` to the Windows machine (~8–12 GB compressed)
+3. Transfer `qdrant_storage_10gb.zip` to the Windows machine (~1–2 GB compressed)
 4. On Windows: unzip into `C:\learning\qdrant-x86_64-pc-windows-msvc\storage\` (replace existing)
 5. Start Qdrant on Windows and verify both collections appear at http://localhost:6333/dashboard
 
@@ -417,7 +411,7 @@ The Windows machine will then run offline evaluation (Recall@5, MRR, Precision@5
 ## Notes
 
 - **MPS batch size**: 64 is optimal for M3. Do not increase beyond 128.
-- **Storage size**: each collection is ~4–5 GB; total ~8–10 GB on disk, ~8–12 GB zipped.
+- **Storage size**: each collection is ~800 MB–1 GB; total ~1.5–2 GB on disk, ~1–2 GB zipped.
 - **Chunk ID hashing**: `abs(hash(chunk_id)) % (2**63)` avoids Qdrant's unsigned int64 ID requirement.
 - **Sparse vector dimension**: using `hash(token) % 100000` as a fixed-size vocabulary space — sufficient for BM25-style retrieval without a pre-built vocabulary.
 - **Redirects**: automatically skipped (abstract starts with "REDIRECT").
