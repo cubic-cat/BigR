@@ -7,7 +7,20 @@ from .embedding import EmbeddingClient, SupportsEmbedding
 from .generator import ChatMessage, GenerationResult, LLMGenerator
 from .cross_encoder_reranker import CrossEncoderReranker
 from .keyword_reranker import KeywordReranker
+from .query_enhancer import (
+    IdentityEnhancer,
+    QueryExpansionEnhancer,
+    QueryEnhancer,
+    SimpleRewriteEnhancer,
+    create_query_enhancer,
+)
 from .rag_chain import RAGChain, RAGResult
+from .rerank_experiments import (
+    CrossEncoderRerankAdapter,
+    KeywordRerankAdapter,
+    NoRerank,
+    create_rerank_strategy,
+)
 from .reranker import (
     available_rerank_methods,
     get_default_rerank_enabled,
@@ -32,6 +45,11 @@ __all__ = [
     "GenerationResult",
     "CrossEncoderReranker",
     "KeywordReranker",
+    "QueryEnhancer",
+    "IdentityEnhancer",
+    "SimpleRewriteEnhancer",
+    "QueryExpansionEnhancer",
+    "create_query_enhancer",
     "LLMGenerator",
     "LocalVectorRetriever",
     "RAGChain",
@@ -47,4 +65,8 @@ __all__ = [
     "set_default_rerank_enabled",
     "set_default_rerank_method",
     "set_default_retrieval_method",
+    "NoRerank",
+    "KeywordRerankAdapter",
+    "CrossEncoderRerankAdapter",
+    "create_rerank_strategy",
 ]

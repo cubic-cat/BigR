@@ -19,6 +19,12 @@ from typing import Any, Mapping, Sequence
 from document.loader import DEFAULT_PROCESSED_DIR, load_processed_documents
 
 from .generator import ChatMessage, GenerationResult, LLMGenerator
+from .query_enhancer import create_query_enhancer
+from .reranker import (
+    get_default_rerank_enabled,
+    get_default_rerank_method,
+    resolve_reranker,
+)
 from .retriever import LocalVectorRetriever, SearchResult, VectorDocument
 
 
@@ -97,18 +103,142 @@ class RAGChain:
         top_k: int = 4,
         min_score: float | None = None,
         rerank: bool | None = None,
+        retrieval_method: str | None = None,
         rerank_method: str | None = None,
         refresh_from_processed: bool = False,
+        enable_query_enhancer: bool = False,
+        query_enhancer_type: str = "identity",
+        query_merge_method: str = "rrf",
     ) -> list[SearchResult]:
         """Expose retrieval without generation."""
         self.ensure_knowledge_base(refresh_from_processed=refresh_from_processed)
-        return self.retriever.similarity_search(
-            query,
+        if not enable_query_enhancer:
+            return self.retriever.similarity_search(
+                query,
+                top_k=top_k,
+                min_score=min_score,
+                rerank=rerank,
+                retrieval_method=retrieval_method,
+                rerank_method=rerank_method,
+            )
+
+        enhancer = create_query_enhancer(query_enhancer_type)
+        enhanced_queries = enhancer.enhance(query)
+        if not enhanced_queries:
+            enhanced_queries = [query]
+
+        merged_results = self._multi_query_search(
+            enhanced_queries,
             top_k=top_k,
             min_score=min_score,
             rerank=rerank,
+            retrieval_method=retrieval_method,
             rerank_method=rerank_method,
+            merge_method=query_merge_method,
+            original_query=query,
         )
+        return merged_results
+
+    def _multi_query_search(
+        self,
+        enhanced_queries: Sequence[str],
+        *,
+        top_k: int,
+        min_score: float | None,
+        rerank: bool | None,
+        retrieval_method: str | None,
+        rerank_method: str | None,
+        merge_method: str,
+        original_query: str,
+    ) -> list[SearchResult]:
+        """Run retrieval for multiple queries then merge results."""
+        per_query_results: list[list[SearchResult]] = []
+        for enhanced_query in enhanced_queries:
+            results = self.retriever.similarity_search(
+                enhanced_query,
+                top_k=max(top_k * 2, top_k),
+                min_score=None,
+                rerank=False,
+                retrieval_method=retrieval_method,
+                rerank_method=rerank_method,
+            )
+            per_query_results.append(results)
+
+        merged = self._merge_multi_query_results(
+            per_query_results,
+            top_k=max(top_k * 2, top_k),
+            merge_method=merge_method,
+        )
+        if min_score is not None:
+            merged = [item for item in merged if item.score >= min_score]
+
+        active_rerank = get_default_rerank_enabled() if rerank is None else rerank
+        if not active_rerank:
+            return merged[: max(top_k, 0)]
+
+        method = (rerank_method or get_default_rerank_method()).strip().lower()
+        strategy = resolve_reranker(method)
+        return strategy.rerank(
+            query=original_query,
+            results=merged,
+            top_k=top_k,
+            min_score=min_score,
+        )
+
+    @staticmethod
+    def _merge_multi_query_results(
+        result_groups: Sequence[Sequence[SearchResult]],
+        *,
+        top_k: int,
+        merge_method: str = "rrf",
+        rrf_k: float = 20.0,
+    ) -> list[SearchResult]:
+        """Merge multi-query retrieval results via RRF or weighted score."""
+        method = (merge_method or "rrf").strip().lower()
+        if method not in {"rrf", "weighted"}:
+            raise ValueError("query merge method must be `rrf` or `weighted`.")
+
+        scores: dict[str, float] = {}
+        best_result_by_id: dict[str, SearchResult] = {}
+
+        for group in result_groups:
+            for rank, item in enumerate(group, start=1):
+                if method == "rrf":
+                    score = 1.0 / (rrf_k + rank)
+                else:
+                    score = item.score
+                scores[item.id] = scores.get(item.id, 0.0) + score
+                current = best_result_by_id.get(item.id)
+                if current is None or item.score > current.score:
+                    best_result_by_id[item.id] = item
+
+        merged: list[SearchResult] = []
+        for doc_id, aggregate_score in scores.items():
+            base = best_result_by_id[doc_id]
+            merged.append(
+                SearchResult(
+                    id=base.id,
+                    text=base.text,
+                    metadata=dict(base.metadata),
+                    score=float(aggregate_score),
+                    retrieval_score=float(aggregate_score),
+                    vector_score=base.vector_score,
+                    rerank_score=base.rerank_score,
+                    retrieval_method=base.retrieval_method,
+                    rerank_method=base.rerank_method,
+                    details={
+                        **base.details,
+                        "multi_query_merged": True,
+                        "query_merge_method": method,
+                    },
+                )
+            )
+
+        merged.sort(
+            key=lambda item: (item.score, item.retrieval_score, item.vector_score),
+            reverse=True,
+        )
+        return merged[: max(top_k, 0)]
 
     def ask(
         self,
@@ -117,11 +247,15 @@ class RAGChain:
         top_k: int = 4,
         min_score: float | None = None,
         rerank: bool | None = None,
+        retrieval_method: str | None = None,
         rerank_method: str | None = None,
         max_context_chars: int = 4000,
         system_prompt: str | None = None,
         history: Sequence[ChatMessage | Mapping[str, str]] | None = None,
         refresh_from_processed: bool = False,
+        enable_query_enhancer: bool = False,
+        query_enhancer_type: str = "identity",
+        query_merge_method: str = "rrf",
     ) -> RAGResult:
         """Run retrieval and pass the retrieved context to the LLM."""
         retrieved_documents = self.search(
@@ -129,8 +263,12 @@ class RAGChain:
             top_k=top_k,
             min_score=min_score,
             rerank=rerank,
+            retrieval_method=retrieval_method,
             rerank_method=rerank_method,
             refresh_from_processed=refresh_from_processed,
+            enable_query_enhancer=enable_query_enhancer,
+            query_enhancer_type=query_enhancer_type,
+            query_merge_method=query_merge_method,
         )
         context = self.retriever.build_context(
             retrieved_documents,
