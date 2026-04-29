@@ -8,3 +8,7 @@ pandas>=2.2.3
 openpyxl>=3.1.5
 jieba>=0.42.1
 sentence-transformers>=3.0.0
+# Qdrant vector database backend (required for Wikipedia-scale ingestion)
+qdrant-client>=1.9.0
+# Progress bars for bulk ingestion
+tqdm>=4.66.0

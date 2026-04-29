@@ -1,31 +1,90 @@
 # BigR
 
-一个使用本地 `vector_store/` 作为向量库的轻量 RAG 项目。当前重点能力：
+轻量级 RAG（检索增强生成）系统，已扩展支持大规模 Wikipedia 知识库。小规模场景使用本地向量库，Wikipedia 级别入库使用 Qdrant。
 
-- 从 `data/processed/` 读取文本并构建知识库
-- 使用可切换的召回方式做第一阶段检索
-- 使用可切换的重排方式做第二阶段排序
-- 支持仅召回测试
-- 支持完整 RAG 全链路测试：召回 + 重排 + LLM 生成
+## 主要功能
 
-当前已实现：
+- 灵活检索方式：`dense` | `sparse` | `hybrid`（RRF 融合）
+- 可插拔重排：`keyword` | `cross_encoder`
+- Wikipedia JSONL 批量入库流水线（Wikimedia Enterprise 格式）
+- 可插拔 Embedding：本地 `BAAI/bge-m3`（sentence-transformers）或 Qwen/OpenAI API
+- Qdrant 向量库后端，支持百万级知识库
+- 基于 RAGAS 的分块策略评估框架
 
-- 召回方式：`dense` | `sparse` | `hybrid`
-- 重排方式：`keyword` | `cross_encoder`
+## 分块策略评测结果
 
-## 目录说明
+4 种配置对比（100 篇 Wikipedia 文章，8 个问题，RAGAS 0.4.3）：
 
-```text
-configs/         配置文件
-core/            embedding / retriever / reranker / generator / rag_chain
-data/raw/        原始文件
-data/processed/  当前默认知识库来源
-document/        文档加载模块
-scripts/         命令行脚本
-vector_store/    本地向量库存储目录
+| 分块策略 | Embedding | context_precision | faithfulness | answer_relevancy | **综合均值** |
+|----------|-----------|:-----------------:|:------------:|:----------------:|:------------:|
+| **fixed512** | **bge-m3** | **0.917** | **1.000** | 0.962 | **0.970** ★ |
+| fixed256 | bge-m3 | 0.771 | 1.000 | 0.960 | 0.933 |
+| section | qwen | 0.760 | 0.958 | 0.963 | 0.920 |
+| section | bge-m3 | 0.765 | 0.875 | **0.971** | 0.903 |
+
+所有策略在 top-k=5 下 context_recall = 1.000。
+
+**推荐配置：`fixed512` 分块 + `BAAI/bge-m3` 本地 Embedding**
+
+完整分析见 `chunking_strategy_evaluation_report.docx`。
+
+## 后续计划
+
+### 下一步：检索索引方式对比（基于 10 GB 测试语料）
+
+以 fixed512 + bge-m3 为确定基线，在前 5 个 JSONL 文件（约 10 GB，约 150 万篇文章）上对比两种索引方案：
+
+| 索引方式 | 说明 |
+|----------|------|
+| **单向量**（仅 dense） | 每个 chunk 一个 bge-m3 向量，余弦相似度检索 |
+| **双重向量**（dense + sparse） | 每个 chunk 同时建 bge-m3 稠密向量和 BM25 稀疏向量，RRF 融合 |
+
+离线评估指标（构建测试集后跑）：
+
+| 指标 | 目标值 | 说明 |
+|------|--------|------|
+| Recall@5 | > 0.75 | 核心指标——相关文档出现在 top-5 中的比例 |
+| MRR | > 0.65 | 第一个相关结果是否排在前面 |
+| Precision@5 | > 0.50 | top-5 中相关文档的比例（噪声是否可控） |
+
+### 后续
+
+- 扩大 RAGAS 评估规模（500–5000 篇），验证分块策略结论的稳定性
+- 确定最优索引配置后，全量入库所有 38 个文件（约 75 GB）
+- 补充多跳问题、摘要类问题和比较类问题，扩充评测问题集
+
+## 项目结构
+
+```
+BigR/
+├── configs/                     配置层（embedding、LLM、向量库）
+├── core/
+│   ├── embedding.py             EmbeddingClient (API) + LocalEmbeddingClient (bge-m3)
+│   ├── retriever.py             本地 JSON 向量库（小规模）
+│   ├── qdrant_retriever.py      Qdrant 后端（Wikipedia 规模）
+│   ├── dense_retrieval.py       稠密检索
+│   ├── sparse_retrieval.py      BM25 稀疏检索
+│   ├── hybrid_retrieval.py      RRF 混合检索
+│   ├── reranker.py              重排框架
+│   ├── keyword_reranker.py      关键词重排
+│   ├── cross_encoder_reranker.py  交叉编码器重排
+│   ├── generator.py             LLM 生成
+│   └── rag_chain.py             端到端 RAG 链
+├── document/
+│   ├── loader.py                文本文件加载器
+│   ├── wiki_loader.py           Wikipedia JSONL 解析器
+│   └── splitter.py              分块策略（section-first、固定窗口）
+├── scripts/
+│   ├── build_kb.py              小规模知识库构建脚本
+│   ├── ingest_wikipedia.py      Wikipedia 批量入库流水线
+│   ├── eval_strategies.py       RAGAS 分块策略评估脚本
+│   └── test_rag.py              检索与 RAG 链测试脚本
+├── chunking_strategy_evaluation_report.docx   评测报告
+├── EVAL_RESULTS.md              早期评测结果（section vs fixed512，Qwen）
+└── PROGRESS.md                  项目进度记录
 ```
 
-## 环境准备
+## 环境配置
 
 ### 安装依赖
 
@@ -33,364 +92,139 @@ vector_store/    本地向量库存储目录
 pip install -r requirements.txt
 ```
 
-### 初始化环境变量
-
-如果还没有 `.env`，先复制模板：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-至少要保证：
-
-- 建库和召回时，embedding key 可用
-- 跑全链路时，embedding key 和 LLM key 都可用
-
-### 准备知识库文本
-
-把待入库文本放到：
-
-```text
-data/processed/
-```
-
-当前默认读取的文件类型：
-
-- `.txt`
-- `.md`
-- `.markdown`
-- `.text`
-
-## 常用命令
-
-### 查看当前配置
+### 配置环境变量
 
 ```bash
-python main.py
+cp .env.example .env
+# 编辑 .env，填入 API Key
 ```
 
-### 构建知识库
-
-推荐命令：
-
-```bash
-python scripts/build_kb.py
+使用 bge-m3 本地入库时最少需要配置（不需要 API Key）：
+```env
+VECTOR_DB_PROVIDER=qdrant
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+QDRANT_VECTOR_SIZE=1024
 ```
 
-作用：
-
-- 读取 `data/processed/`
-- 调用 embedding 模型生成向量
-- 写入 `vector_store/rag_knowledge_base/store.json`
-
-等价入口：
-
-```bash
-python -m core.embedding
+RAG 生成和 RAGAS 评估还需要配置：
+```env
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_API_KEY=your_key_here
 ```
 
-## test_rag.py 的执行方式
+### 启动 Qdrant
 
-[`scripts/test_rag.py`](scripts/test_rag.py) 现在支持两种模式：
-
-- 仅召回测试
-- 全链路测试
-
-### 1. 列出可用召回方式和重排方式
+从 https://github.com/qdrant/qdrant/releases 下载对应平台的二进制文件，然后：
 
 ```bash
+# 必须在二进制文件所在目录下启动
+cd /path/to/qdrant
+./qdrant          # Linux/Mac
+.\qdrant.exe      # Windows
+```
+
+管理界面：http://localhost:6333/dashboard
+
+## Wikipedia 入库
+
+### 使用 bge-m3 入库（推荐——免费、本地运行）
+
+编辑 `scripts/ingest_wikipedia.py`，切换为 `LocalEmbeddingClient`：
+
+```python
+from core.embedding import build_embedding_client
+embedding_client = build_embedding_client(model="BAAI/bge-m3", batch_size=64)
+```
+
+然后运行：
+
+```bash
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0_0.jsonl \
+  --collection wikipedia_en \
+  --embed-batch-size 64
+```
+
+### 断点续传
+
+```bash
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0_5.jsonl \
+  --collection wikipedia_en \
+  --skip 150000
+```
+
+### 空跑模式（只解析不入库）
+
+```bash
+python scripts/ingest_wikipedia.py \
+  --file /path/to/enwiki_namespace_0_0.jsonl \
+  --dry-run --max-articles 100
+```
+
+## 分块策略评估
+
+使用 RAGAS 对比多种分块策略：
+
+```bash
+# 如果 bge-m3 已下载，设置离线模式
+$env:HF_HUB_OFFLINE = "1"   # PowerShell
+
+python scripts/eval_strategies.py \
+  --max-articles 100 \
+  --strategies section,fixed512,fixed256 \
+  --embedding BAAI/bge-m3 \
+  --also-qwen-section \
+  --output results/eval_4way.json
+```
+
+复用已有 collection，跳过重新入库：
+
+```bash
+python scripts/eval_strategies.py \
+  --strategies section,fixed512,fixed256 \
+  --embedding BAAI/bge-m3 \
+  --skip-ingest \
+  --output results/eval_4way.json
+```
+
+## 检索测试
+
+```bash
+# 列出可用的检索和重排方式
 python scripts/test_rag.py --list-methods
+
+# 仅检索测试
+python scripts/test_rag.py -q "Who discovered asteroid 1214 Richilde?"
+
+# 全链路测试（检索 + LLM 生成）
+python scripts/test_rag.py -q "Who discovered asteroid 1214 Richilde?" --full-chain
+
+# 指定检索和重排方式
+python scripts/test_rag.py -q "your question" \
+  --retrieval-method hybrid \
+  --rerank-method cross_encoder \
+  --full-chain
 ```
 
-当前输出应至少包含：
-
-```text
-dense
-sparse
-hybrid
-keyword
-cross_encoder
-```
-
-### 2. 仅召回测试
-
-这是最常用的方式，只做检索和重排，不调用 LLM。
-
-#### 直接检索
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么"
-```
-
-输出内容包括：
-
-- query
-- collection
-- store_path
-- document_count
-- vector_dimensions
-- retrieval_method
-- rerank_method
-- rank
-- score
-- retrieval_score
-- vector_score
-- rerank_score
-- text
-
-#### 交互式输入 query
-
-```bash
-python scripts/test_rag.py
-```
-
-#### 指定返回条数
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" -k 5
-```
-
-#### 设置最小分数阈值
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
-```
-
-#### 输出完整召回文本
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-text
-```
-
-#### 控制文本预览长度
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --preview-chars 500
-```
-
-#### 关闭重排
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --no-rerank
-```
-
-#### 指定重排前候选数
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --candidate-top-k 10
-```
-
-说明：
-
-- 检索阶段先取 `candidate_top_k` 个候选
-- 然后重排器对候选重新排序
-- 最终返回 `top_k` 个结果
-
-### 3. 更换召回方式
-
-有两种方式。
-
-#### 方法 A：命令行临时切换
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --retrieval-method dense
-```
-
-#### 方法 B：环境变量切换默认召回方式
-
-在 `.env` 中设置：
+## 主要 .env 配置项
 
 ```env
-RETRIEVAL_METHOD=dense
-```
-
-然后直接运行：
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么"
-```
-
-### 4. 更换重排方式
-
-同样有两种方式。
-
-#### 方法 A：命令行临时切换
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --rerank-method keyword
-```
-
-#### 方法 B：命令行临时使用 Cross-Encoder 重排
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --rerank-method cross_encoder
-```
-
-首次使用时会自动从 HuggingFace 下载模型。如果网络受限，可手动下载 `BAAI/bge-reranker-base` 到本地，并通过环境变量指定路径：
-
-```env
-CROSS_ENCODER_MODEL=/path/to/local/bge-reranker-base
-```
-
-#### 方法 C：环境变量切换默认重排方式
-
-在 `.env` 中设置：
-
-```env
-RERANK_METHOD=keyword
-```
-
-如果要默认关闭重排：
-
-```env
-RERANK_ENABLED=false
-```
-
-### 5. 检索前强制重建知识库
-
-如果你修改了 `data/processed/` 里的文本，想在检索前强制重建向量库，可以加：
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
-```
-
-## 运行全链路
-
-全链路 = 召回 + 重排 + 组装上下文 + 调用 LLM 生成答案。
-
-### 最基本的全链路命令
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain
-```
-
-### 指定召回方式和重排方式跑全链路
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method hybrid --rerank-method cross_encoder
-```
-
-### 全链路时显示上下文
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --show-context
-```
-
-### 全链路时控制上下文长度
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --max-context-chars 6000
-```
-
-### 全链路时同时刷新知识库
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --refresh-from-processed
-```
-
-## 推荐使用顺序
-
-### 方式一：分步执行
-
-```bash
-python main.py
-python scripts/build_kb.py
-python scripts/test_rag.py -q "你的问题" --retrieval-method dense --rerank-method keyword
-python scripts/test_rag.py -q "你的问题" --full-chain --retrieval-method hybrid --rerank-method cross_encoder
-```
-
-### 方式二：直接检索前刷新
-
-```bash
-python scripts/test_rag.py -q "你的问题" --refresh-from-processed
-```
-
-### 方式三：直接跑全链路并刷新
-
-```bash
-python scripts/test_rag.py -q "你的问题" --full-chain --refresh-from-processed
-```
-
-## .env 中和召回/重排相关的字段
-
-当前模板在 [`.env.example`](.env.example) 中，相关字段包括：
-
-```env
-RETRIEVAL_METHOD=dense
+# 检索
+RETRIEVAL_METHOD=hybrid          # dense | sparse | hybrid
 RERANK_ENABLED=true
-RERANK_METHOD=keyword
+RERANK_METHOD=keyword            # keyword | cross_encoder
 RERANK_CANDIDATE_TOP_K=10
-KEYWORD_RERANK_RETRIEVAL_WEIGHT=0.85
-KEYWORD_RERANK_KEYWORD_WEIGHT=0.15
-CROSS_ENCODER_MODEL=BAAI/bge-reranker-base
-CROSS_ENCODER_DEVICE=
-CROSS_ENCODER_BATCH_SIZE=8
-CROSS_ENCODER_MAX_LENGTH=512
-```
 
-含义：
+# Embedding（API 模式）
+EMBEDDING_MODEL_NAME=text-embedding-v4
+EMBEDDING_BATCH_SIZE=10          # text-embedding-v4 最大 batch=10
 
-- `RETRIEVAL_METHOD`：默认召回方式（`dense` | `sparse` | `hybrid`）
-- `RERANK_ENABLED`：默认是否启用重排
-- `RERANK_METHOD`：默认重排方式（`keyword` | `cross_encoder`）
-- `RERANK_CANDIDATE_TOP_K`：重排前先取多少个候选
-- `KEYWORD_RERANK_RETRIEVAL_WEIGHT`：keyword 重排中原始召回分权重
-- `KEYWORD_RERANK_KEYWORD_WEIGHT`：keyword 重排中关键词匹配分权重
-- `CROSS_ENCODER_MODEL`：Cross-Encoder 模型名称或本地路径
-- `CROSS_ENCODER_DEVICE`：运行设备（如 `cuda`、`cpu`），留空自动选择
-- `CROSS_ENCODER_BATCH_SIZE`：Cross-Encoder 推理批次大小
-- `CROSS_ENCODER_MAX_LENGTH`：Cross-Encoder 最大输入长度
-
-## 常见报错
-
-### 向量库为空
-
-说明：
-
-- 还没有建库
-- 或 `vector_store/` 中没有有效数据
-
-处理方式：
-
-```bash
-python scripts/build_kb.py
-```
-
-或者：
-
-```bash
-python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
-```
-
-### 缺少 embedding key
-
-说明：
-
-- 建库和召回都需要 embedding key
-
-### 缺少 LLM key
-
-说明：
-
-- 只有在 `--full-chain` 模式下才需要
-
-## 当前最常用命令清单
-
-```bash
-python main.py
-python scripts/build_kb.py
-python -m core.embedding
-python scripts/test_rag.py --list-methods
-python scripts/test_rag.py
-python scripts/test_rag.py -q "RAG 是什么"
-python scripts/test_rag.py -q "RAG 是什么" -k 5
-python scripts/test_rag.py -q "RAG 是什么" --retrieval-method hybrid --rerank-method cross_encoder
-python scripts/test_rag.py -q "RAG 是什么" --min-score 0.6
-python scripts/test_rag.py -q "RAG 是什么" --no-rerank
-python scripts/test_rag.py -q "RAG 是什么" --candidate-top-k 10
-python scripts/test_rag.py -q "RAG 是什么" --full-text
-python scripts/test_rag.py -q "RAG 是什么" --refresh-from-processed
-python scripts/test_rag.py -q "RAG 是什么" --full-chain
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --show-context
-python scripts/test_rag.py -q "RAG 是什么" --full-chain --retrieval-method dense --rerank-method keyword
+# 向量库
+VECTOR_DB_PROVIDER=qdrant
+VECTOR_DB_COLLECTION_NAME=wikipedia_en
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+QDRANT_VECTOR_SIZE=1024
 ```
