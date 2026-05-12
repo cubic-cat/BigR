@@ -1,0 +1,38 @@
+{
+  "top_k": 20,
+  "bm25_pool": 50000,
+  "levels": {
+    "0": {
+      "name": "L0:full_sent",
+      "n_queries": 147,
+      "dense_recall": 0.9932,
+      "bm25_recall": 1.0,
+      "dense_avg_rank": 1.0,
+      "bm25_avg_rank": 1.0
+    },
+    "1": {
+      "name": "L1:no_title",
+      "n_queries": 143,
+      "dense_recall": 0.6573,
+      "bm25_recall": 0.965,
+      "dense_avg_rank": 3.6,
+      "bm25_avg_rank": 1.4
+    },
+    "2": {
+      "name": "L2:content_words",
+      "n_queries": 143,
+      "dense_recall": 0.5385,
+      "bm25_recall": 0.9371,
+      "dense_avg_rank": 4.2,
+      "bm25_avg_rank": 1.8
+    },
+    "3": {
+      "name": "L3:shuffled_keys",
+      "n_queries": 150,
+      "dense_recall": 0.5533,
+      "bm25_recall": 0.9733,
+      "dense_avg_rank": 4.3,
+      "bm25_avg_rank": 1.4
+    }
+  }
+}

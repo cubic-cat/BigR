@@ -10,6 +10,48 @@
 - 可插拔 Embedding：本地 `BAAI/bge-m3`（sentence-transformers）或 Qwen/OpenAI API
 - Qdrant 向量库后端，支持百万级知识库
 - 基于 RAGAS 的分块策略评估框架
+- 多维度检索方案对比评测体系
+
+---
+
+## 数据集与索引信息
+
+### Embedding 模型
+
+| 属性 | 值 |
+|------|-----|
+| 模型名称 | `BAAI/bge-small-en-v1.5` |
+| 向量维度 | 384 |
+| 距离度量 | Cosine |
+| 来源 | HuggingFace sentence-transformers |
+| 归一化 | L2 normalize（encode 时 `normalize_embeddings=True`） |
+
+### 数据源文件
+
+使用 Wikimedia Enterprise JSONL 格式的英文 Wikipedia 数据，共 5 个文件：
+
+| # | 文件名 | 大小（约） |
+|---|--------|-----------|
+| 1 | `enwiki_namespace_0_0.jsonl` | ~2 GB |
+| 2 | `enwiki_namespace_0_3.jsonl` | ~2 GB |
+| 3 | `enwiki_namespace_0_6.jsonl` | ~2 GB |
+| 4 | `enwiki_namespace_0_9.jsonl` | ~2 GB |
+| 5 | `enwiki_namespace_0_12.jsonl` | ~2 GB |
+
+**共计约 10 GB 原始语料。**
+
+### Qdrant 集合信息
+
+| 属性 | 值 |
+|------|-----|
+| 集合名称 | `documents` |
+| 总向量数（chunks） | **1,963,836** |
+| 索引类型 | HNSW |
+| HNSW 参数 | m=16, ef_construct=100 |
+| 分段数 | 7 |
+| 分块策略 | fixed512（512 token 固定窗口） |
+
+---
 
 ## 分块策略评测结果
 
@@ -28,30 +70,184 @@
 
 完整分析见 `chunking_strategy_evaluation_report.docx`。
 
+---
+
+## 检索方案对比评测
+
+### 评测概述
+
+在已入库的 196 万 chunks 集合上，对比三种检索策略在多种评测维度下的表现。
+
+**被评测的检索方案：**
+
+| 方案 | 实现方式 | 说明 |
+|------|---------|------|
+| **Dense (HNSW)** | Qdrant `query_points()` + HNSW 近似最近邻 | 384 维 bge-small-en-v1.5 向量检索 |
+| **BM25** | 客户端 BM25 评分（k1=1.5, b=0.75） | 对文档池全量遍历打分 |
+| **Hybrid-RRF** | Dense(2K) + BM25(2K) → Reciprocal Rank Fusion (k=20) | 双路召回 + RRF 融合排序 |
+
+**评测维度（共 4 项）：**
+
+1. Recall@K 曲线（不同 query 难度）
+2. Recall@K 随 K 增大的变化趋势
+3. 跨文章语义关联发现能力
+4. Query 退化鲁棒性
+
+---
+
+### 评测一：基础 Recall@K（不同 Query 难度）
+
+**实验设计**：从集合中采样文章，分别用"文章标题"、"首句摘要"、"全文片段"作为 query，衡量能否检索到源文章的 chunks。
+
+#### 结果：Query = 文章标题（最难，模拟真实用户提问）
+
+| 方案 | Recall@5 | Precision@5 | MRR | Latency |
+|------|:--------:|:-----------:|:---:|:-------:|
+| Dense | 0.8150 | 0.163 | 0.7904 | 21.7 ms |
+| **BM25** | **1.0000** | **0.200** | **0.9967** | 12.4 ms |
+| Hybrid-RRF | 1.0000 | 0.200 | 0.9097 | 32.8 ms |
+
+> 测试集: 227 篇文章, BM25 pool: 10,000 docs
+
+#### 结果：Query = 首句摘要（中等难度）
+
+| 方案 | Recall@5 | Precision@5 | MRR | Latency |
+|------|:--------:|:-----------:|:---:|:-------:|
+| Dense | 0.9690 | — | 0.9639 | 32.4 ms |
+| **BM25** | **0.9912** | — | **0.9841** | 356.2 ms |
+| Hybrid-RRF | 0.9867 | — | 0.9745 | 391.7 ms |
+
+> 测试集: 226 篇文章, BM25 pool: 50,000 docs
+
+#### 结果：Query = 全文片段（简单，调试用）
+
+| 方案 | Recall@5 | Precision@5 | MRR | Latency |
+|------|:--------:|:-----------:|:---:|:-------:|
+| Dense | 1.0000 | 0.200 | 0.9967 | 27.6 ms |
+| BM25 | 1.0000 | 0.200 | 1.0000 | 168.5 ms |
+| Hybrid-RRF | 1.0000 | 0.200 | 1.0000 | 192.6 ms |
+
+> 测试集: 151 篇文章, BM25 pool: 10,000 docs（所有方案表现一致）
+
+---
+
+### 评测二：Recall@K 曲线（K=5, 10, 20, 50）
+
+**实验设计**：固定 query 难度，增大 K 值，观察 Recall 是否随 K 增长——即"找不到"是排名靠后还是根本不在索引覆盖范围内。
+
+#### Query = 文章标题（BM25 pool = 50,000）
+
+| 方案 | R@5 | R@10 | R@20 | R@50 | MRR |
+|------|:---:|:----:|:----:|:----:|:---:|
+| Dense | 0.8150 | 0.8194 | 0.8194 | 0.8194 | 0.7909 |
+| **BM25** | **1.0000** | **1.0000** | **1.0000** | **1.0000** | **0.9978** |
+| Hybrid-RRF | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 0.9046 |
+
+> 测试集: 227 篇文章
+
+#### Query = 首句摘要（BM25 pool = 50,000）
+
+| 方案 | R@5 | R@10 | R@20 | R@50 | MRR |
+|------|:---:|:----:|:----:|:----:|:---:|
+| Dense | 0.9690 | 0.9690 | 0.9690 | 0.9690 | 0.9639 |
+| BM25 | 0.9912 | 0.9912 | 0.9956 | 0.9956 | 0.9841 |
+| Hybrid-RRF | 0.9867 | 0.9912 | 0.9912 | 0.9956 | 0.9745 |
+
+> 测试集: 226 篇文章
+
+**关键发现**：
+- Dense 的 Recall 曲线**完全扁平**（R@5 = R@10 = R@20 = R@50），说明有 ~18% 的文章在任何 K 值下都检索不到，是**硬性召回盲区**，而非排序问题
+- BM25 在 K=5 即达到几乎完美召回，无需更大 K 值
+
+---
+
+### 评测三：跨文章语义关联发现能力
+
+**实验设计**：去除 query 中的文章标题词，测试检索方法能否发现"语义相关但来自不同文章"的内容。衡量语义泛化能力。
+
+| 指标 | Dense | BM25 |
+|------|:-----:|:----:|
+| 同源文章命中（占 Top-20 全部 slot） | 3.97% | 4.77% |
+| **跨文章命中**（占 Top-20 全部 slot） | **96.03%** | **95.23%** |
+| 平均每 query 发现的不同文章数 | 18.29 | 19.03 |
+| 源文章出现在 Top-20 的比例 | 100% | 100% |
+
+> 测试集: 150 queries, Top-K=20, BM25 pool=50,000
+
+**结论**：Dense 和 BM25 在跨文章关联发现上**无显著差异**。两者均能发现大量来自其他文章的相关内容。
+
+---
+
+### 评测四：Query 退化鲁棒性测试
+
+**实验设计**：逐步从 query 中剥离信息，测试哪种方法在 query 质量下降时仍能保持高召回。
+
+**退化级别定义：**
+
+| 级别 | 操作 | 难度 | 示例 |
+|------|------|------|------|
+| L0 | 原文首句（完整） | 简单 | "Bendemeer is a subzone within the planning area of Kallang..." |
+| L1 | 首句去除标题词 | 中等 | "is a subzone within the planning area of ..." |
+| L2 | 仅保留内容词（去停词、去标题词） | 困难 | "subzone within planning area Kallang defined..." |
+| L3 | 关键词打乱顺序 | 极难 | "boundary Authority Redevelopment Urban defined..." |
+
+#### 结果（Top-K = 20, BM25 pool = 50,000）
+
+| 退化级别 | Dense R@20 | Dense AvgRank | BM25 R@20 | BM25 AvgRank |
+|---------|:----------:|:-------------:|:---------:|:------------:|
+| **L0: 完整首句** | 0.9932 | 1.0 | 1.0000 | 1.0 |
+| **L1: 去标题词** | 0.6573 | 3.6 | 0.9650 | 1.4 |
+| **L2: 仅内容词** | 0.5385 | 4.2 | 0.9371 | 1.8 |
+| **L3: 打乱关键词** | 0.5533 | 4.3 | 0.9733 | 1.4 |
+
+**关键发现**：
+- Dense Recall 从 L0 的 0.993 **暴跌**至 L1 的 0.657（降幅 34%），进一步降至 L2/L3 的 ~0.54
+- BM25 在所有退化级别均保持 **>0.93** 的 Recall
+- L3（词序完全打乱）BM25 Recall 甚至回升至 0.973，证明 BM25 不依赖词序
+- **结论：Dense 的高 Recall 主要依赖文本重叠（verbatim match），并非真正的语义理解**
+
+---
+
+### 综合结论
+
+#### 各方案最终评价
+
+| 维度 | Dense (HNSW) | BM25 | Hybrid-RRF |
+|------|:------------:|:----:|:----------:|
+| 基础 Recall（title query） | 0.815 | **1.000** | **1.000** |
+| Recall@K 是否随 K 增长 | 否（扁平线） | 是（已满） | 是（已满） |
+| 退化鲁棒性（L3） | 0.553 | **0.973** | — |
+| 跨文章多样性 | 18.3 | **19.0** | — |
+| 延迟 | **~22 ms** | ~12-356 ms* | ~33-392 ms |
+| 召回天花板 | 有（~18% 盲区） | **无** | **无** |
+
+> *BM25 延迟取决于 pool 大小：10K pool ≈ 12ms，50K pool ≈ 356ms
+
+#### 核心结论
+
+1. **在当前配置下（bge-small-en-v1.5 384d + Wikipedia 长文本），BM25 全面优于 Dense 检索**
+2. Dense 存在 ~18% 的硬性召回盲区，无法通过增大 K 解决
+3. Dense 的"语义理解"能力有限——退化测试证实其高 Recall 依赖文本重叠
+4. Hybrid-RRF 相比纯 BM25 没有额外增益（BM25 已接近 1.0 天花板）
+5. BM25 对 query 退化极其鲁棒（词序打乱后仍 0.97）
+
+#### 推荐方案
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| 当前数据集最优 | **BM25** | Recall 最高，鲁棒性最强 |
+| 低延迟要求 | BM25（小 pool）或 Dense | Dense 延迟稳定 ~22ms |
+| 加 Rerank | BM25 Top-20 → Cross-Encoder | 给 Reranker 提供高质量候选 |
+| 提升 Dense | 换用大模型（bge-m3 1024d）+ **重建索引** | 可能解决语义理解不足 |
+
+---
+
 ## 后续计划
 
-### 下一步：检索索引方式对比（基于 10 GB 测试语料）
-
-以 fixed512 + bge-m3 为确定基线，在前 5 个 JSONL 文件（约 10 GB，约 150 万篇文章）上对比两种索引方案：
-
-| 索引方式 | 说明 |
-|----------|------|
-| **单向量**（仅 dense） | 每个 chunk 一个 bge-m3 向量，余弦相似度检索 |
-| **双重向量**（dense + sparse） | 每个 chunk 同时建 bge-m3 稠密向量和 BM25 稀疏向量，RRF 融合 |
-
-离线评估指标（构建测试集后跑）：
-
-| 指标 | 目标值 | 说明 |
-|------|--------|------|
-| Recall@5 | > 0.75 | 核心指标——相关文档出现在 top-5 中的比例 |
-| MRR | > 0.65 | 第一个相关结果是否排在前面 |
-| Precision@5 | > 0.50 | top-5 中相关文档的比例（噪声是否可控） |
-
-### 后续
-
-- 扩大 RAGAS 评估规模（500–5000 篇），验证分块策略结论的稳定性
-- 确定最优索引配置后，全量入库所有 38 个文件（约 75 GB）
-- 补充多跳问题、摘要类问题和比较类问题，扩充评测问题集
+- 在 BM25 Top-20 基础上测试 Cross-Encoder Rerank（BAAI/bge-reranker-base）
+- 评估更大 Embedding 模型（bge-m3 1024d）能否消除 Dense 的召回盲区
+- 如延迟敏感：用 `ingest_wikipedia_dual.py` 重建双索引集合（Qdrant 原生 BM25）
+- 扩大评估规模至 500+ 文章，验证结论稳定性
 
 ## 项目结构
 
@@ -78,7 +274,17 @@ BigR/
 │   ├── build_kb.py              小规模知识库构建脚本
 │   ├── ingest_wikipedia.py      Wikipedia 批量入库流水线
 │   ├── eval_strategies.py       RAGAS 分块策略评估脚本
+│   ├── eval_retrieval_comparison.py   检索方案对比评测（Dense/BM25/Hybrid）
+│   ├── eval_degradation.py      Query 退化鲁棒性测试
+│   ├── eval_cross_article.py    跨文章语义关联评测
 │   └── test_rag.py              检索与 RAG 链测试脚本
+├── results/                     评测结果（JSON）
+│   ├── recall_curve_title.json          Recall@K 曲线（title query）
+│   ├── recall_curve_abstract.json       Recall@K 曲线（abstract query）
+│   ├── degradation_test.json            Query 退化测试结果
+│   ├── cross_article_eval_v2.json       跨文章关联评测结果
+│   ├── retrieval_comparison_title.json  基础对比（title query）
+│   └── retrieval_comparison_abstract.json  基础对比（abstract query）
 ├── chunking_strategy_evaluation_report.docx   评测报告
 ├── EVAL_RESULTS.md              早期评测结果（section vs fixed512，Qwen）
 └── PROGRESS.md                  项目进度记录

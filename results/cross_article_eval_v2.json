@@ -1,0 +1,17 @@
+{
+  "n_queries": 150,
+  "top_k": 20,
+  "bm25_pool": 50000,
+  "dense": {
+    "same_article_hits": 119,
+    "cross_article_hits": 2881,
+    "avg_unique_cross_titles": 18.29,
+    "source_found_rate": 1.0
+  },
+  "bm25": {
+    "same_article_hits": 143,
+    "cross_article_hits": 2857,
+    "avg_unique_cross_titles": 19.03,
+    "source_found_rate": 1.0
+  }
+}
