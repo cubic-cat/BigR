@@ -24,6 +24,9 @@ env/
 # Local data and vector stores
 data/
 vector_store/
+qdrant-x86_64-pc-windows-msvc/
+documents-1290890201345816-2026-05-08-02-05-00.snapshot
+documents.zip
 *.faiss
 *.bin
 *.npy

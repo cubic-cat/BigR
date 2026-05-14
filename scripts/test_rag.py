@@ -1,4 +1,4 @@
-"""Test retrieval quality against the local vector store."""
+"""Test retrieval quality against the vector store (local or Qdrant)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from core import LocalVectorRetriever, RAGChain, available_rerank_methods
+from core import RAGChain, available_rerank_methods
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,14 +96,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def ensure_vector_store_ready(retriever: LocalVectorRetriever) -> None:
-    stats = retriever.stats()
-    store_path = Path(stats["store_path"])
-    if not store_path.exists() or stats["document_count"] == 0:
-        raise FileNotFoundError(
-            "Local vector store is empty. Run `python scripts/build_kb.py` first "
-            "to embed documents from `data/processed`."
-        )
+def ensure_vector_store_ready(chain: RAGChain) -> None:
+    stats = chain.retriever.stats()
+    if stats["document_count"] == 0:
+        backend = stats.get("backend", "unknown")
+        if backend == "qdrant":
+            raise FileNotFoundError(
+                f"Qdrant collection '{stats.get('collection_name', '')}' is empty. "
+                "Please check your Qdrant storage path."
+            )
+        else:
+            raise FileNotFoundError(
+                "Local vector store is empty. Run `python scripts/build_kb.py` first "
+                "to embed documents from `data/processed`."
+            )
 
 
 def get_query_text(initial_query: str | None) -> str:
@@ -124,8 +130,9 @@ def render_text(text: str, *, full_text: bool, preview_chars: int) -> str:
 
 
 def print_available_methods() -> None:
+    chain = RAGChain()
     print("=== Available Retrieval Methods ===")
-    for method in LocalVectorRetriever.available_retrieval_methods():
+    for method in chain.retriever.available_retrieval_methods():
         print(method)
     print()
     print("=== Available Rerank Methods ===")
@@ -134,27 +141,21 @@ def print_available_methods() -> None:
 
 
 def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
-    retriever = LocalVectorRetriever(
-        retrieval_method=args.retrieval_method,
-        rerank_method=args.rerank_method,
-    )
+    chain = RAGChain()
 
     if args.refresh_from_processed:
-        chain = RAGChain(retriever=retriever)
-        if not retriever.embedding_client.is_configured():
+        if not chain.retriever.embedding_client.is_configured():
             raise ValueError(
                 "Embedding API key is missing. Set EMBEDDING_API_KEY or the "
                 "provider-specific key in `.env` before rebuilding the knowledge base."
             )
         chain.build_knowledge_base(replace=True, persist=True)
 
-    ensure_vector_store_ready(retriever)
+    ensure_vector_store_ready(chain)
 
-    if not retriever.embedding_client.is_configured():
-        raise ValueError(
-            "Embedding API key is missing. Set EMBEDDING_API_KEY or the "
-            "provider-specific key in `.env` before running retrieval tests."
-        )
+    retriever = chain.retriever
+    if hasattr(retriever, 'embedding_client') and not retriever.embedding_client.is_configured():
+        print("Warning: Embedding API key not configured, some features may be limited")
 
     results = retriever.similarity_search(
         query,
@@ -169,14 +170,15 @@ def run_retrieval_only(args: argparse.Namespace, query: str) -> None:
     stats = retriever.stats()
     print("=== Retrieval Request ===")
     print(f"query: {query}")
-    print(f"collection: {stats['collection_name']}")
-    print(f"store_path: {stats['store_path']}")
-    print(f"document_count: {stats['document_count']}")
-    print(f"vector_dimensions: {stats['dimensions']}")
-    print(f"retrieval_method: {stats['retrieval_method']}")
-    print(f"available_methods: {', '.join(stats['available_retrieval_methods'])}")
-    print(f"rerank_method: {stats['rerank_method']}")
-    print(f"available_rerank_methods: {', '.join(stats['available_rerank_methods'])}")
+    print(f"collection: {stats.get('collection_name', 'N/A')}")
+    print(f"backend: {stats.get('backend', 'N/A')}")
+    print(f"store_path: {stats.get('store_path', 'N/A')}")
+    print(f"document_count: {stats.get('document_count', 0)}")
+    print(f"vector_dimensions: {stats.get('dimensions', 0)}")
+    print(f"retrieval_method: {stats.get('retrieval_method', 'N/A')}")
+    print(f"available_methods: {', '.join(stats.get('available_retrieval_methods', []))}")
+    print(f"rerank_method: {stats.get('rerank_method', 'N/A')}")
+    print(f"available_rerank_methods: {', '.join(stats.get('available_rerank_methods', []))}")
     print(f"top_k: {args.top_k}")
     print(f"rerank: {not args.no_rerank}")
     print(f"candidate_top_k: {args.candidate_top_k or args.top_k}")
