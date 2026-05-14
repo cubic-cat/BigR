@@ -1,0 +1,38 @@
+{
+  "n_test_cases": 227,
+  "k_values": [
+    5,
+    10,
+    20,
+    50
+  ],
+  "collection": "documents",
+  "query_mode": "title",
+  "bm25_pool_size": 50000,
+  "results": {
+    "dense": {
+      "Recall@5": 0.815,
+      "Recall@10": 0.8194,
+      "Recall@20": 0.8194,
+      "Recall@50": 0.8194,
+      "MRR": 0.7909,
+      "Latency_ms": 28.37
+    },
+    "bm25": {
+      "Recall@5": 1.0,
+      "Recall@10": 1.0,
+      "Recall@20": 1.0,
+      "Recall@50": 1.0,
+      "MRR": 0.9978,
+      "Latency_ms": 67.99
+    },
+    "hybrid_rrf": {
+      "Recall@5": 1.0,
+      "Recall@10": 1.0,
+      "Recall@20": 1.0,
+      "Recall@50": 1.0,
+      "MRR": 0.9046,
+      "Latency_ms": 101.14
+    }
+  }
+}

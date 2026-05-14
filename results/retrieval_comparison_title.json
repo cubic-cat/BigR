@@ -1,0 +1,26 @@
+{
+  "n_test_cases": 227,
+  "top_k": 5,
+  "collection": "documents",
+  "bm25_pool_size": 10000,
+  "results": {
+    "dense": {
+      "Recall@5": 0.815,
+      "Precision@5": 0.163,
+      "MRR": 0.7904,
+      "Latency_ms": 21.67
+    },
+    "bm25": {
+      "Recall@5": 1.0,
+      "Precision@5": 0.2,
+      "MRR": 0.9967,
+      "Latency_ms": 12.36
+    },
+    "hybrid_rrf": {
+      "Recall@5": 1.0,
+      "Precision@5": 0.2,
+      "MRR": 0.9097,
+      "Latency_ms": 32.77
+    }
+  }
+}

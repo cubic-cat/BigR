@@ -214,12 +214,9 @@ def main() -> None:
         os.environ.setdefault("VECTOR_DB_COLLECTION_NAME", args.collection)
 
         from core.qdrant_retriever import QdrantRetriever
-        from core.embedding import EmbeddingClient
+        from core.embedding import build_embedding_client
 
-        embedding_client = EmbeddingClient()
-        if not embedding_client.is_configured():
-            print("[ERROR] Embedding API key missing. Set EMBEDDING_API_KEY in .env", file=sys.stderr)
-            sys.exit(1)
+        embedding_client = build_embedding_client(model="BAAI/bge-m3", batch_size=args.embed_batch_size)
 
         qdrant_retriever = QdrantRetriever(embedding_client=embedding_client)
         cfg = qdrant_retriever.config
