@@ -54,31 +54,56 @@ def to_markdown_table(rows: list[dict[str, Any]]) -> str:
 def build_summary(payload: dict[str, Any]) -> str:
     results: list[dict[str, Any]] = list(payload["results"])
     best: dict[str, Any] = dict(payload["best"])
+    config = payload["config"]
 
-    # Derive a fast baseline: identity + none rerank + dense when available.
     baseline = None
     for item in results:
         if (
-            item["retrieval"] == "dense"
+            item["retrieval"] == "bm25"
             and item["rerank"] == "none"
             and item["enhancer"] == "identity"
         ):
             baseline = item
             break
 
+    if baseline is None:
+        for item in results:
+            if (
+                item["retrieval"] == "dense"
+                and item["rerank"] == "none"
+                and item["enhancer"] == "identity"
+            ):
+                baseline = item
+                break
+
     lines = [
-        f"- 最优组合：`{best['retrieval']} + {best['rerank']} + {best['enhancer']}`。",
-        f"- 该组合 Recall@K={best['recall_at_k']:.4f}, MRR@K={best['mrr_at_k']:.4f}, "
-        f"nDCG@K={best['ndcg_at_k']:.4f}, 平均延迟={best['latency_ms_avg']:.2f}ms。",
+        f"- 实验配置：{config['questions']} 个测试问题，Top-K={config['top_k']}",
+        f"- 最优组合：`{best['retrieval']} + {best['rerank']} + {best['enhancer']}`",
+        f"- 最优指标：Recall@K={best['recall_at_k']:.4f}, Precision@K={best['precision_at_k']:.4f}, "
+        f"MRR@K={best['mrr_at_k']:.4f}, nDCG@K={best['ndcg_at_k']:.4f}, "
+        f"平均延迟={best['latency_ms_avg']:.2f}ms (P95={best['latency_ms_p95']:.2f}ms)",
     ]
+    
     if baseline is not None:
         recall_gain = best["recall_at_k"] - baseline["recall_at_k"]
+        precision_gain = best["precision_at_k"] - baseline["precision_at_k"]
         mrr_gain = best["mrr_at_k"] - baseline["mrr_at_k"]
-        lines.append(
-            "- 相比 baseline (`dense + none + identity`)："
-            f"Recall@K {'+' if recall_gain >= 0 else ''}{recall_gain:.4f}, "
-            f"MRR@K {'+' if mrr_gain >= 0 else ''}{mrr_gain:.4f}。"
-        )
+        ndcg_gain = best["ndcg_at_k"] - baseline["ndcg_at_k"]
+        latency_ratio = best["latency_ms_avg"] / baseline["latency_ms_avg"] if baseline["latency_ms_avg"] > 0 else float('inf')
+        
+        lines.append("")
+        lines.append(f"- **Baseline** (`{baseline['retrieval']} + {baseline['rerank']} + {baseline['enhancer']}`):")
+        lines.append(f"  - Recall@K={baseline['recall_at_k']:.4f}, Precision@K={baseline['precision_at_k']:.4f}")
+        lines.append(f"  - MRR@K={baseline['mrr_at_k']:.4f}, nDCG@K={baseline['ndcg_at_k']:.4f}")
+        lines.append(f"  - 延迟={baseline['latency_ms_avg']:.2f}ms")
+        lines.append("")
+        lines.append("- **增益对比**（最优 vs Baseline）：")
+        lines.append(f"  - Recall@K: {'+' if recall_gain >= 0 else ''}{recall_gain:.4f} ({recall_gain*100:.1f}%)")
+        lines.append(f"  - Precision@K: {'+' if precision_gain >= 0 else ''}{precision_gain:.4f} ({precision_gain*100:.1f}%)")
+        lines.append(f"  - MRR@K: {'+' if mrr_gain >= 0 else ''}{mrr_gain:.4f} ({mrr_gain*100:.1f}%)")
+        lines.append(f"  - nDCG@K: {'+' if ndcg_gain >= 0 else ''}{ndcg_gain:.4f} ({ndcg_gain*100:.1f}%)")
+        lines.append(f"  - 延迟变化: {latency_ratio:.2f}x")
+
     return "\n".join(lines)
 
 

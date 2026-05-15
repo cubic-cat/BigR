@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Evaluate rerank strategies on top of BM25 retrieval.
+"""Evaluate rerank strategies on top of BM25 retrieval (best retrieval method).
 
 Experiment matrix:
-  Retrieval: bm25 (default, based on retrieval evaluation findings)
+  Retrieval: bm25 (fixed, based on retrieval evaluation findings)
   Rerank:    none | keyword | cross_encoder
   Enhancer:  identity | rewrite | expansion
 
 Metrics: Recall@K, Precision@K, MRR, nDCG@K, Latency
 
+Usage:
+    # First generate test set
+    python scripts/generate_test_set.py --collection documents --max-articles 100 --output test_set.jsonl
+    
+    # Then run rerank evaluation
+    python scripts/eval_retrieval_rerank.py --questions test_set.jsonl
+
 Outputs:
-  1) Console table
-  2) JSON artifact (default: output/retrieval_eval_results.json)
-  3) CSV artifact  (default: output/retrieval_eval_results.csv)
+  1) Console table with progress
+  2) JSON artifact (default: output/rerank_eval_results.json)
+  3) CSV artifact  (default: output/rerank_eval_results.csv)
 """
 
 from __future__ import annotations
@@ -23,7 +30,6 @@ import math
 import statistics
 import sys
 import time
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
@@ -34,13 +40,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 if TYPE_CHECKING:
     from core.search_types import SearchResult
-
-
-RETRIEVAL_METHODS = {
-    "dense": "dense",
-    "bm25": "sparse",
-    "hybrid": "hybrid",
-}
 
 
 @dataclass(slots=True)
@@ -71,18 +70,37 @@ class EvalRecord:
         }
 
 
+BUILTIN_QUESTIONS = [
+    {
+        "question": "What was the lowest air pressure recorded during the 1906 Mississippi hurricane?",
+        "reference": "The lowest air pressure recorded in Mobile was 977 mbar during the 1906 Mississippi hurricane.",
+    },
+    {
+        "question": "When was asteroid 1214 Richilde discovered and by whom?",
+        "reference": "Richilde was discovered on 1 January 1932 by German astronomer Max Wolf at the Heidelberg-Konigstuhl State Observatory.",
+    },
+    {
+        "question": "What is the #NotAgainSU movement about?",
+        "reference": "NotAgainSU is a hashtag and student-led organization that began after racist incidents at Syracuse University between 2019 and 2021.",
+    },
+    {
+        "question": "What type of asteroid is 1214 Richilde classified as?",
+        "reference": "In the SMASS classification, Richilde is an Xk-subtype asteroid that transitions from X-type to the rare K-type.",
+    },
+    {
+        "question": "How many demands did the NotAgainSU protesters make to Syracuse University?",
+        "reference": "The protesters initially made 19 demands to Chancellor Kent Syverud, which was later expanded to 34.",
+    },
+]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate rerank strategies on BM25 retrieval.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--questions", default=None, help="JSONL with {question, reference}")
+    parser.add_argument("--questions", default=None, help="JSONL file with {question, reference}")
     parser.add_argument("--top-k", type=int, default=5, help="Evaluation cutoff K")
-    parser.add_argument(
-        "--retrieval-methods",
-        default="bm25",
-        help="Comma-separated: dense,bm25,hybrid (default: bm25 only)",
-    )
     parser.add_argument(
         "--rerank-methods",
         default="none,keyword,cross_encoder",
@@ -101,37 +119,39 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-json",
-        default="output/retrieval_eval_results.json",
+        default="output/rerank_eval_results.json",
         help="Path to save JSON results",
     )
     parser.add_argument(
         "--output-csv",
-        default="output/retrieval_eval_results.csv",
+        default="output/rerank_eval_results.csv",
         help="Path to save CSV results",
     )
     parser.add_argument(
-        "--generate-test-set",
-        action="store_true",
-        help="Generate test set from Qdrant collection instead of using --questions",
-    )
-    parser.add_argument(
-        "--collection",
-        default="documents",
-        help="Qdrant collection name for test set generation",
-    )
-    parser.add_argument(
-        "--max-articles",
-        type=int,
-        default=100,
-        help="Number of articles to sample for test set",
-    )
-    parser.add_argument(
-        "--query-mode",
-        default="title",
-        choices=["title", "abstract", "full"],
-        help="Query generation mode for test set",
+        "--batch-size", type=int, default=10, help="Progress reporting batch size"
     )
     return parser.parse_args()
+
+
+def load_questions(path: str | None) -> list[dict[str, str]]:
+    if not path:
+        print("Warning: No --questions provided, using built-in questions (5 questions)")
+        return list(BUILTIN_QUESTIONS)
+
+    questions: list[dict[str, str]] = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            question = str(item.get("question", "")).strip()
+            reference = str(item.get("reference", "")).strip()
+            if question and reference:
+                questions.append({"question": question, "reference": reference})
+    if not questions:
+        raise ValueError("No valid questions loaded from --questions")
+    return questions
 
 
 def tokenize(text: str) -> set[str]:
@@ -185,85 +205,15 @@ def dedupe_results(results: Iterable[SearchResult]) -> list[SearchResult]:
     return unique
 
 
-def generate_test_set_from_chain(chain, args) -> list[dict[str, str]]:
-    """Generate test set by sampling from the knowledge base."""
-    from core.search_types import SearchResult
-
-    print(f"Generating test set from collection '{args.collection}'...")
-    
-    test_cases = []
-    
-    try:
-        retriever = chain.retriever
-        if hasattr(retriever, '_scroll_all_as_documents'):
-            all_docs = retriever._scroll_all_as_documents(limit=args.max_articles * 10)
-        elif hasattr(retriever, 'list_documents'):
-            all_docs = retriever.list_documents()
-        else:
-            print("Warning: Cannot access documents from retriever")
-            return []
-    except Exception as e:
-        print(f"Warning: Failed to access documents: {e}")
-        return []
-    
-    articles: dict[str, list[dict]] = {}
-    for doc in all_docs:
-        meta = doc.metadata
-        title = meta.get("title", "")
-        if not title:
-            continue
-        chunk_index = meta.get("chunk_index", 0)
-        if title not in articles:
-            articles[title] = []
-        articles[title].append({
-            "id": doc.id,
-            "chunk_index": chunk_index,
-            "text": doc.text,
-        })
-    
-    titles = list(articles.keys())[:args.max_articles]
-    for title in titles:
-        chunks = articles[title]
-        query_chunks = [c for c in chunks if c["chunk_index"] == 0]
-        if not query_chunks:
-            continue
-        
-        first_text = query_chunks[0]["text"]
-        
-        if args.query_mode == "title":
-            query_text = title
-        elif args.query_mode == "abstract":
-            period_idx = first_text.find(". ")
-            if period_idx > 0:
-                query_text = first_text[:period_idx + 1]
-            else:
-                query_text = first_text[:200]
-        else:
-            query_text = first_text[:300]
-        
-        if len(query_text) < 3:
-            continue
-        
-        reference_chunk = chunks[0]["text"] if chunks else ""
-        test_cases.append({
-            "question": query_text,
-            "reference": reference_chunk,
-            "title": title,
-        })
-    
-    print(f"Generated {len(test_cases)} test cases")
-    return test_cases
-
-
 def evaluate_configuration(
     *,
     chain,
     questions: Sequence[dict[str, str]],
-    retrieval_method: str,
     rerank_method: str,
     enhancer_name: str,
     top_k: int,
     min_overlap: float,
+    batch_size: int,
 ) -> EvalRecord:
     from core.query_enhancer import create_query_enhancer
     from core.rerank_experiments import create_rerank_strategy
@@ -277,7 +227,9 @@ def evaluate_configuration(
     ndcg_scores: list[float] = []
     latencies_ms: list[float] = []
 
-    for qa in questions:
+    n = len(questions)
+    
+    for i, qa in enumerate(questions, 1):
         query = qa["question"]
         reference = qa["reference"]
 
@@ -288,8 +240,8 @@ def evaluate_configuration(
         for expanded_query in expanded_queries:
             hits = chain.search(
                 expanded_query,
-                top_k=max(top_k * 2, top_k),
-                retrieval_method=RETRIEVAL_METHODS[retrieval_method],
+                top_k=20,  # BM25 先召回 Top-20
+                retrieval_method="sparse",
                 rerank=False,
                 enable_query_enhancer=False,
             )
@@ -310,6 +262,12 @@ def evaluate_configuration(
         mrr_scores.append(compute_mrr(binary_relevances))
         ndcg_scores.append(compute_ndcg(relevances))
 
+        if i % batch_size == 0 or i == n:
+            avg_recall = sum(recall_scores) / i
+            avg_mrr = sum(mrr_scores) / i
+            avg_latency = sum(latencies_ms) / i
+            print(f"  [{i}/{n}] Recall@K={avg_recall:.4f}, MRR@K={avg_mrr:.4f}, Latency={avg_latency:.2f}ms")
+
     latency_p95 = (
         statistics.quantiles(latencies_ms, n=20)[18]
         if len(latencies_ms) >= 20
@@ -317,7 +275,7 @@ def evaluate_configuration(
     )
 
     return EvalRecord(
-        retrieval=retrieval_method,
+        retrieval="bm25",
         rerank=rerank_method,
         enhancer=enhancer_name,
         recall_at_k=sum(recall_scores) / len(recall_scores),
@@ -342,8 +300,9 @@ def print_table(records: Sequence[EvalRecord]) -> None:
         "latency_avg(ms)",
         "latency_p95(ms)",
     ]
+    print("\n" + "=" * 150)
     print(" | ".join(headers))
-    print("-" * 140)
+    print("-" * 150)
     for item in records:
         print(
             f"{item.retrieval:8} | {item.rerank:12} | {item.enhancer:9} | "
@@ -351,6 +310,7 @@ def print_table(records: Sequence[EvalRecord]) -> None:
             f"{item.mrr_at_k:8.4f} | {item.ndcg_at_k:8.4f} | "
             f"{item.latency_ms_avg:14.2f} | {item.latency_ms_p95:14.2f}"
         )
+    print("=" * 150)
 
 
 def save_json(path: str, payload: dict[str, Any]) -> None:
@@ -389,39 +349,40 @@ def main() -> None:
 
     chain = RAGChain()
 
-    if args.generate_test_set:
-        questions = generate_test_set_from_chain(chain, args)
-        if not questions:
-            print("Warning: Failed to generate test set, using built-in questions")
-            from scripts.eval_retrieval_rerank import BUILTIN_QUESTIONS
-            questions = BUILTIN_QUESTIONS
-    else:
-        questions = load_questions(args.questions)
+    questions = load_questions(args.questions)
+    print(f"Loaded {len(questions)} test questions")
 
-    retrieval_methods = [item.strip().lower() for item in args.retrieval_methods.split(",") if item.strip()]
     rerank_methods = [item.strip().lower() for item in args.rerank_methods.split(",") if item.strip()]
     enhancers = [item.strip().lower() for item in args.enhancers.split(",") if item.strip()]
 
-    for retrieval in retrieval_methods:
-        if retrieval not in RETRIEVAL_METHODS:
-            raise ValueError(f"Unsupported retrieval method: {retrieval}")
+    total_configs = len(rerank_methods) * len(enhancers)
+    print(f"Testing {total_configs} configurations (rerank: {rerank_methods}, enhancers: {enhancers})")
+    print(f"Retrieval method: BM25 (fixed as best retrieval method)")
+    print(f"Top-K: {args.top_k}, Min overlap: {args.min_overlap}")
+    print()
 
     records: list[EvalRecord] = []
+    config_idx = 0
 
-    for retrieval in retrieval_methods:
-        for rerank in rerank_methods:
-            for enhancer in enhancers:
-                print(f"[RUN] retrieval={retrieval}, rerank={rerank}, enhancer={enhancer}")
-                record = evaluate_configuration(
-                    chain=chain,
-                    questions=questions,
-                    retrieval_method=retrieval,
-                    rerank_method=rerank,
-                    enhancer_name=enhancer,
-                    top_k=args.top_k,
-                    min_overlap=args.min_overlap,
-                )
-                records.append(record)
+    for rerank in rerank_methods:
+        for enhancer in enhancers:
+            config_idx += 1
+            print(f"\n[{config_idx}/{total_configs}] Testing: rerank={rerank}, enhancer={enhancer}")
+            print("-" * 60)
+            
+            record = evaluate_configuration(
+                chain=chain,
+                questions=questions,
+                rerank_method=rerank,
+                enhancer_name=enhancer,
+                top_k=args.top_k,
+                min_overlap=args.min_overlap,
+                batch_size=args.batch_size,
+            )
+            records.append(record)
+
+            print(f"  Completed: Recall@K={record.recall_at_k:.4f}, MRR@K={record.mrr_at_k:.4f}, "
+                  f"Latency={record.latency_ms_avg:.2f}ms")
 
     best = sorted(
         records,
@@ -434,78 +395,39 @@ def main() -> None:
         ),
     )[0]
 
-    print()
+    print("\n" + "=" * 150)
+    print("FINAL RESULTS")
+    print("=" * 150)
     print_table(records)
-    print()
-    print(
-        "[BEST] "
-        f"retrieval={best.retrieval}, rerank={best.rerank}, enhancer={best.enhancer}, "
-        f"recall@k={best.recall_at_k:.4f}, precision@k={best.precision_at_k:.4f}, "
-        f"mrr@k={best.mrr_at_k:.4f}, ndcg@k={best.ndcg_at_k:.4f}, "
-        f"latency_avg={best.latency_ms_avg:.2f}ms"
-    )
+    
+    print("\n[BEST CONFIGURATION]")
+    print(f"  retrieval: {best.retrieval}")
+    print(f"  rerank: {best.rerank}")
+    print(f"  enhancer: {best.enhancer}")
+    print(f"  recall@k: {best.recall_at_k:.4f}")
+    print(f"  precision@k: {best.precision_at_k:.4f}")
+    print(f"  mrr@k: {best.mrr_at_k:.4f}")
+    print(f"  ndcg@k: {best.ndcg_at_k:.4f}")
+    print(f"  latency_avg: {best.latency_ms_avg:.2f}ms")
+    print(f"  latency_p95: {best.latency_ms_p95:.2f}ms")
+    print(f"  questions: {best.questions}")
 
     payload = {
         "config": {
             "top_k": args.top_k,
             "questions": len(questions),
-            "retrieval_methods": retrieval_methods,
+            "retrieval_method": "bm25",
             "rerank_methods": rerank_methods,
             "enhancers": enhancers,
             "min_overlap": args.min_overlap,
-            "collection": args.collection if args.generate_test_set else None,
-            "query_mode": args.query_mode if args.generate_test_set else None,
         },
         "results": [item.to_dict() for item in records],
         "best": best.to_dict(),
     }
     save_json(args.output_json, payload)
     save_csv(args.output_csv, records)
-    print(f"[SAVE] JSON: {args.output_json}")
-    print(f"[SAVE] CSV : {args.output_csv}")
-
-
-def load_questions(path: str | None) -> list[dict[str, str]]:
-    BUILTIN_QUESTIONS = [
-        {
-            "question": "What was the lowest air pressure recorded during the 1906 Mississippi hurricane?",
-            "reference": "The lowest air pressure recorded in Mobile was 977 mbar during the 1906 Mississippi hurricane.",
-        },
-        {
-            "question": "When was asteroid 1214 Richilde discovered and by whom?",
-            "reference": "Richilde was discovered on 1 January 1932 by German astronomer Max Wolf at the Heidelberg-Konigstuhl State Observatory.",
-        },
-        {
-            "question": "What is the #NotAgainSU movement about?",
-            "reference": "NotAgainSU is a hashtag and student-led organization that began after racist incidents at Syracuse University between 2019 and 2021.",
-        },
-        {
-            "question": "What type of asteroid is 1214 Richilde classified as?",
-            "reference": "In the SMASS classification, Richilde is an Xk-subtype asteroid that transitions from X-type to the rare K-type.",
-        },
-        {
-            "question": "How many demands did the NotAgainSU protesters make to Syracuse University?",
-            "reference": "The protesters initially made 19 demands to Chancellor Kent Syverud, which was later expanded to 34.",
-        },
-    ]
-
-    if not path:
-        return list(BUILTIN_QUESTIONS)
-
-    questions: list[dict[str, str]] = []
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            item = json.loads(line)
-            question = str(item.get("question", "")).strip()
-            reference = str(item.get("reference", "")).strip()
-            if question and reference:
-                questions.append({"question": question, "reference": reference})
-    if not questions:
-        raise ValueError("No valid questions loaded from --questions")
-    return questions
+    print(f"\n[SAVED] JSON: {args.output_json}")
+    print(f"[SAVED] CSV: {args.output_csv}")
 
 
 if __name__ == "__main__":
