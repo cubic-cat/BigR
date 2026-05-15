@@ -443,6 +443,23 @@ def evaluate(args: argparse.Namespace) -> None:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
         print(f"Saved: {output_path}")
 
+    if args.save_queries:
+        queries_path = Path(args.save_queries)
+        queries_path.parent.mkdir(parents=True, exist_ok=True)
+        save_data = [
+            {
+                "query": q["query"],
+                "source_title": q["source_title"],
+                "source_id": q["source_id"],
+                "query_type": q["query_type"],
+                "body_preview": q["body_preview"],
+            }
+            for q in queries
+        ]
+        with open(queries_path, "w", encoding="utf-8") as f:
+            json.dump({"n_queries": len(save_data), "queries": save_data}, f, ensure_ascii=False, indent=2)
+        print(f"Saved queries: {queries_path}")
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -459,6 +476,8 @@ def parse_args():
     p.add_argument("--bm25-pool", type=int, default=50000)
     p.add_argument("--embedding", default="BAAI/bge-small-en-v1.5")
     p.add_argument("--output", default=None)
+    p.add_argument("--save-queries", default=None,
+                   help="Save generated query set to JSON file")
     return p.parse_args()
 
 

@@ -524,6 +524,22 @@ def evaluate(args: argparse.Namespace) -> None:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
         print(f"Saved: {output_path}")
 
+    if args.save_queries:
+        queries_path = Path(args.save_queries)
+        queries_path.parent.mkdir(parents=True, exist_ok=True)
+        queries_data = [
+            {
+                "query": tc["query"],
+                "title": tc["title"],
+                "n_chunks": tc["n_chunks"],
+                "relevant_ids": list(tc["relevant_ids"]),
+            }
+            for tc in test_cases
+        ]
+        with open(queries_path, "w", encoding="utf-8") as f:
+            json.dump({"query_mode": args.query_mode, "queries": queries_data}, f, ensure_ascii=False, indent=2)
+        print(f"Saved queries: {queries_path}")
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -557,6 +573,8 @@ def parse_args() -> argparse.Namespace:
                    help="Embedding model (auto-detected from vector dim if omitted)")
     p.add_argument("--output", default=None,
                    help="Save results to JSON file")
+    p.add_argument("--save-queries", default=None,
+                   help="Save generated query set to JSON file")
     return p.parse_args()
 
 
