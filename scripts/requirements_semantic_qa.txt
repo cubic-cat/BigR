@@ -1,0 +1,14 @@
+# Semantic QA Benchmark — Incremental Dependencies
+
+# These are INCREMENTAL dependencies beyond the project's existing requirements.txt
+# Install only if you want to run the supplementary semantic QA evaluation pipeline.
+
+# RAGAS evaluation framework (required for run_ragas_evaluation.py)
+ragas>=0.4.0
+
+# Note: The following are already in the main requirements.txt and do NOT need re-installation:
+# - openai (used by LLMGenerator and RAGAS)
+# - qdrant-client (used by QdrantRetriever)
+# - sentence-transformers (used by CrossEncoderReranker and LocalEmbeddingClient)
+# - python-dotenv (used for .env loading)
+# - tqdm (used for progress bars)
