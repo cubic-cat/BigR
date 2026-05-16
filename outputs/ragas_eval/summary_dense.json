@@ -1,0 +1,32 @@
+{
+  "method": "dense",
+  "top_k": 10,
+  "n_questions": 50,
+  "n_successful": 50,
+  "qa_path": "outputs\\qa_benchmark\\llm_generated_qa.json",
+  "collection": "documents",
+  "metrics": {
+    "context_precision": {
+      "mean": 0.4159,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "context_recall": {
+      "mean": 0.37,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "faithfulness": {
+      "mean": 0.9021,
+      "min": 0.4,
+      "max": 1.0
+    },
+    "answer_relevancy": {
+      "mean": 0.4481,
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+  "avg_retrieval_latency_ms": 12148.9,
+  "avg_generation_latency_ms": 24165.1
+}

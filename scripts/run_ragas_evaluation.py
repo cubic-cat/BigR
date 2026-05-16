@@ -332,6 +332,59 @@ def score_one(
 
 
 # ---------------------------------------------------------------------------
+# 检查点保存函数
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(
+    output_dir: Path,
+    method: str,
+    results: list[dict],
+    qa_pairs: list[dict],
+    top_k: int,
+    collection: str,
+    qa_path: str,
+) -> None:
+    """保存检查点结果，用于中断后恢复。"""
+    checkpoint_path = output_dir / f"checkpoint_{method.replace('+', '_')}.json"
+    metric_names = ["context_precision", "context_recall", "faithfulness", "answer_relevancy"]
+
+    checkpoint = {
+        "method": method,
+        "top_k": top_k,
+        "n_questions": len(qa_pairs),
+        "n_completed": len(results),
+        "qa_path": qa_path,
+        "collection": collection,
+        "results": results,
+        "metrics": {},
+    }
+
+    for m in metric_names:
+        vals = [r["scores"][m] for r in results if "scores" in r and m in r["scores"]]
+        if vals:
+            checkpoint["metrics"][m] = {
+                "mean": round(sum(vals) / len(vals), 4),
+                "min": round(min(vals), 4),
+                "max": round(max(vals), 4),
+            }
+
+    with open(checkpoint_path, "w", encoding="utf-8") as f:
+        json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+
+
+def load_checkpoint(output_dir: Path, method: str) -> tuple[list[dict], int] | None:
+    """加载检查点，返回(results, next_start_index)。"""
+    checkpoint_path = output_dir / f"checkpoint_{method.replace('+', '_')}.json"
+    if not checkpoint_path.exists():
+        return None
+
+    with open(checkpoint_path, "r", encoding="utf-8") as f:
+        checkpoint = json.load(f)
+
+    return checkpoint["results"], checkpoint["n_completed"]
+
+
+# ---------------------------------------------------------------------------
 # 主评估流程
 # ---------------------------------------------------------------------------
 
@@ -398,14 +451,27 @@ def run_evaluation(args: argparse.Namespace) -> None:
     )
     print("RAGAS指标准备就绪:", list(ragas_metrics.keys()))
 
+    # --- 检查是否从检查点恢复 ---
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint = load_checkpoint(output_dir, method)
+    start_index = 0
+
+    if checkpoint:
+        results, start_index = checkpoint
+        print(f"\n[恢复] 从检查点恢复，已完成 {start_index}/{len(qa_pairs)} 个问题")
+        print(f"[继续] 将从第 {start_index} 个问题继续...\n")
+    else:
+        results = []
+
     # 评估每个QA对
     top_k = args.top_k
-    results = []
 
-    print(f"\n正在评估 method='{method}'，top_k={top_k}...")
+    print(f"正在评估 method='{method}'，top_k={top_k}...")
     print(f"{'='*60}")
 
-    for i, qa in enumerate(tqdm(qa_pairs, desc=f"评估 ({method})", unit="q")):
+    for i, qa in enumerate(tqdm(qa_pairs[start_index:], desc=f"评估 ({method})", unit="q"), start=start_index):
         question = qa["question"]
         ground_truth = qa["answer"]
 
@@ -466,15 +532,23 @@ def run_evaluation(args: argparse.Namespace) -> None:
             "source_title": qa.get("source_title", ""),
         })
 
-    # --- 保存结果 ---
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        # --- 中途保存（每5个问题保存一次） ---
+        if (i + 1) % 5 == 0:
+            _save_checkpoint(output_dir, method, results, qa_pairs, top_k, collection, str(qa_path))
+            print(f"\n  [检查点] 已保存 {i + 1}/{len(qa_pairs)} 个结果")
 
+    # --- 保存最终结果 ---
     # 保存详细结果
     results_path = output_dir / f"results_{method.replace('+', '_')}.json"
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
     print(f"\n详细结果已保存: {results_path}")
+
+    # 删除检查点文件
+    checkpoint_path = output_dir / f"checkpoint_{method.replace('+', '_')}.json"
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+        print(f"检查点文件已删除: {checkpoint_path}")
 
     # 计算并保存摘要
     metric_names = ["context_precision", "context_recall", "faithfulness", "answer_relevancy"]

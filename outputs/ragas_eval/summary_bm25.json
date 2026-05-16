@@ -1,0 +1,32 @@
+{
+  "method": "bm25",
+  "top_k": 10,
+  "n_questions": 50,
+  "n_successful": 50,
+  "qa_path": "outputs\\qa_benchmark\\llm_generated_qa.json",
+  "collection": "documents",
+  "metrics": {
+    "context_precision": {
+      "mean": 0.4545,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "context_recall": {
+      "mean": 0.39,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "faithfulness": {
+      "mean": 0.9383,
+      "min": 0.6,
+      "max": 1.0
+    },
+    "answer_relevancy": {
+      "mean": 0.4077,
+      "min": 0.0,
+      "max": 0.9993
+    }
+  },
+  "avg_retrieval_latency_ms": 714.3,
+  "avg_generation_latency_ms": 20343.9
+}

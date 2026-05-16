@@ -20,6 +20,7 @@ htmlcov/
 .venv/
 venv/
 env/
+venv_mistral/
 
 # Local data and vector stores
 data/
